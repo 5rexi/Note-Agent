@@ -1,0 +1,106 @@
+{
+  "name": "note-agent",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Local-first, task-session driven desktop agent workspace",
+  "type": "module",
+  "private": true,
+  "main": "dist/main.cjs",
+  "scripts": {
+    "dev": "bun run scripts/build.ts --dev",
+    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:better-sqlite3",
+    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron",
+    "build:renderer": "vite build",
+    "build": "bun run build:main && bun run build:preload && bun run build:renderer",
+    "start": "bun run build && electron dist/main.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "cli": "bun run src/cli.ts",
+    "dist": "bun run build && electron-builder --win",
+    "dist:dir": "bun run build && electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.note-agent.app",
+    "productName": "Note Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.79",
+    "@ai-sdk/openai": "^2.0.105",
+    "@ai-sdk/openai-compatible": "^2.0.45",
+    "@anthropic-ai/sdk": "^0.41.0",
+    "@xmldom/xmldom": "^0.9.10",
+    "adm-zip": "^0.5.17",
+    "ai": "^5.0.182",
+    "better-sqlite3": "^12.1.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "glob": "^13.0.6",
+    "jotai": "^2.16.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.561.0",
+    "mammoth": "^1.12.0",
+    "minimatch": "^10.2.5",
+    "monaco-editor": "^0.55.1",
+    "next-themes": "^0.4.6",
+    "openai": "^4.95.0",
+    "pptx-to-pdf": "^0.1.3",
+    "pptxgenjs": "^4.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.10.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.4.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.2"
+  },
+  "devDependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/adm-zip": "^0.5.8",
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.25.0",
+    "jimp": "^1.6.1",
+    "png-to-ico": "^3.0.1",
+    "tailwindcss": "^4.2.4",
+    "to-ico": "^1.1.5",
+    "typescript": "^5.7.0",
+    "vite": "^6.2.4"
+  }
+}

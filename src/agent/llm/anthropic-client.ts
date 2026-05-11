@@ -1,0 +1,186 @@
+/**
+ * Anthropic Messages API streaming client.
+ *
+ * Anthropic's wire format differs from OpenAI's: tool_use blocks come back
+ * as content_block_start events, system messages are top-level (not part
+ * of the message array), and thinking is delivered via thinking_delta.
+ */
+import type { LLMConfig, ContentPart } from '../types'
+import { withRetry } from '../retry'
+import { supportsVision, toAnthropicContent } from './format-conversion'
+import {
+  type LLMClient,
+  type LLMStreamEvent,
+  MAX_STREAM_DURATION_MS,
+  REQUEST_TIMEOUT_MS,
+} from './types'
+
+export function createAnthropicClient(config: LLMConfig): LLMClient {
+  const baseUrl = (config.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '')
+  const url = `${baseUrl}/v1/messages`
+
+  return {
+    async *stream(messages, tools, signal) {
+      const apiMessages = messages
+        .filter((m) => m.role !== 'system')
+        .map((m) => {
+          if (m.role === 'assistant' && m.toolCalls) {
+            return {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: m.content },
+                ...m.toolCalls.map((tc) => ({
+                  type: 'tool_use',
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.input,
+                })),
+              ],
+            }
+          }
+          if (m.role === 'tool') {
+            return {
+              role: 'user',
+              content: [{
+                type: 'tool_result',
+                tool_use_id: m.toolCallId,
+                content: typeof m.result === 'string' ? m.result : JSON.stringify(m.result),
+              }],
+            }
+          }
+          if (m.role === 'user' && Array.isArray(m.content)) {
+            const parts = supportsVision(config.model) ? m.content : m.content.filter((p) => p.type === 'text')
+            if (parts.length === 0) return { role: 'user', content: '[图片]' }
+            if (parts.every((p) => p.type === 'text')) {
+              return { role: 'user', content: parts.map((p) => (p as any).text).join('\n') }
+            }
+            return { role: 'user', content: toAnthropicContent(parts as ContentPart[]) }
+          }
+          return { role: m.role, content: m.content }
+        })
+
+      const systemMsg = messages.find((m) => m.role === 'system')
+
+      const body: any = {
+        model: config.model,
+        messages: apiMessages,
+        max_tokens: config.maxTokens || 8192,
+        stream: true,
+      }
+      if (systemMsg) body.system = systemMsg.content
+      if (tools.length > 0) {
+        body.tools = tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters,
+        }))
+      }
+
+      const res = await withRetry(
+        async () => {
+          const ctrl = new AbortController()
+          const timeout = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'x-api-key': config.apiKey,
+            'anthropic-version': '2023-06-01',
+          }
+          if (baseUrl.includes('api.kimi.com')) {
+            headers['User-Agent'] = 'claude-code/0.1.0'
+          }
+          const r = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal,
+          })
+          clearTimeout(timeout)
+          if (!r.ok) {
+            const errText = await r.text()
+            const err = new Error(`API error ${r.status}: ${errText}`)
+            ;(err as any).status = r.status
+            throw err
+          }
+          return r
+        },
+        {},
+        (attempt, classified, delay) => {
+          console.error(`[Retry] API call failed (${classified.category}), attempt ${attempt}/${3}, retrying in ${Math.round(delay)}ms...`)
+        },
+      )
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      let streamTimeout: ReturnType<typeof setTimeout> | null = null
+      const clearStreamTimeout = () => {
+        if (streamTimeout) {
+          clearTimeout(streamTimeout)
+          streamTimeout = null
+        }
+      }
+      streamTimeout = setTimeout(() => {
+        console.error(`[LLM] Stream timeout after ${MAX_STREAM_DURATION_MS}ms total, aborting`)
+        reader.cancel('Stream timeout').catch(() => {})
+      }, MAX_STREAM_DURATION_MS)
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          clearStreamTimeout()
+          break
+        }
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6)
+          if (data === '[DONE]') {
+            yield { type: 'done' }
+            continue
+          }
+          try {
+            const parsed = JSON.parse(data)
+            const type = parsed.type
+
+            if (type === 'content_block_delta') {
+              const delta = parsed.delta
+              if (delta.type === 'text_delta') {
+                yield { type: 'text', text: delta.text }
+              }
+              if (delta.type === 'thinking_delta') {
+                yield { type: 'reasoning', reasoning: delta.thinking }
+              }
+              // input_json_delta is accumulated by the caller via tool_use events.
+            }
+
+            if (type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
+              yield {
+                type: 'tool_use',
+                toolCall: {
+                  id: parsed.content_block.id,
+                  name: parsed.content_block.name,
+                  input: parsed.content_block.input || {},
+                },
+              }
+            }
+
+            if (type === 'message_stop') {
+              yield { type: 'done' }
+            }
+          } catch {
+            // Skip malformed SSE lines
+          }
+        }
+      }
+
+      yield { type: 'done' }
+      if (streamTimeout) clearTimeout(streamTimeout)
+    },
+  }
+}
+
+export type { LLMStreamEvent, LLMClient }

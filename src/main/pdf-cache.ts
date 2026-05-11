@@ -1,0 +1,135 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, rmSync } from 'fs'
+import { join } from 'path'
+import { createHash } from 'crypto'
+import { homedir } from 'os'
+
+function getElectronApp() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('electron').app
+  } catch {
+    return null
+  }
+}
+
+function getCacheDir(): string {
+  const app = getElectronApp()
+  if (app) {
+    return join(app.getPath('userData'), 'cache', 'pdf')
+  }
+  // CLI fallback
+  return join(homedir(), '.note_agent', 'cache', 'pdf')
+}
+
+function getCacheKey(sourcePath: string): string {
+  return createHash('sha256').update(sourcePath).digest('hex').slice(0, 16)
+}
+
+function getCachePaths(sourcePath: string): { pdfPath: string; metaPath: string } {
+  const dir = getCacheDir()
+  const key = getCacheKey(sourcePath)
+  return {
+    pdfPath: join(dir, `${key}.pdf`),
+    metaPath: join(dir, `${key}.meta.json`),
+  }
+}
+
+interface CacheMeta {
+  sourcePath: string
+  sourceMtime: number
+  generatedAt: string
+}
+
+/**
+ * Check if a cached PDF exists and is fresh (source file mtime matches).
+ * Returns the cached PDF path if fresh, null otherwise.
+ */
+export function getCachedPdfPath(sourcePath: string): { pdfPath: string | null; isFresh: boolean } {
+  try {
+    const { pdfPath, metaPath } = getCachePaths(sourcePath)
+
+    if (!existsSync(pdfPath) || !existsSync(metaPath)) {
+      return { pdfPath: null, isFresh: false }
+    }
+
+    // Check source file still exists
+    if (!existsSync(sourcePath)) {
+      // Clean up stale cache
+      try {
+        rmSync(pdfPath, { force: true })
+        rmSync(metaPath, { force: true })
+      } catch {}
+      return { pdfPath: null, isFresh: false }
+    }
+
+    // Read metadata
+    let meta: CacheMeta
+    try {
+      meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
+    } catch {
+      // Corrupted metadata — treat as stale
+      return { pdfPath: null, isFresh: false }
+    }
+
+    // Compare mtime
+    const currentStat = statSync(sourcePath)
+    if (Math.floor(currentStat.mtimeMs) === meta.sourceMtime) {
+      return { pdfPath, isFresh: true }
+    }
+
+    return { pdfPath: null, isFresh: false }
+  } catch {
+    return { pdfPath: null, isFresh: false }
+  }
+}
+
+/**
+ * Save a PDF to cache with metadata recording the source file's current mtime.
+ */
+export function savePdfCache(sourcePath: string, pdfBuffer: Buffer): string {
+  const dir = getCacheDir()
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+
+  const { pdfPath, metaPath } = getCachePaths(sourcePath)
+  const stat = statSync(sourcePath)
+  const meta: CacheMeta = {
+    sourcePath,
+    sourceMtime: Math.floor(stat.mtimeMs),
+    generatedAt: new Date().toISOString(),
+  }
+
+  writeFileSync(pdfPath, pdfBuffer)
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
+  return pdfPath
+}
+
+/**
+ * Delete cached PDF and metadata for a source file.
+ */
+export function invalidateCache(sourcePath: string): void {
+  try {
+    const { pdfPath, metaPath } = getCachePaths(sourcePath)
+    if (existsSync(pdfPath)) rmSync(pdfPath, { force: true })
+    if (existsSync(metaPath)) rmSync(metaPath, { force: true })
+  } catch {
+    // ignore
+  }
+}
+
+// ── IPC Handlers ──
+
+export function registerPdfCacheHandlers() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { ipcMain } = require('electron')
+
+  ipcMain.handle('pdf:getCachedPath', async (_event: Electron.IpcMainInvokeEvent, sourcePath: string) => {
+    return getCachedPdfPath(sourcePath)
+  })
+
+  ipcMain.handle('pdf:invalidateCache', async (_event: Electron.IpcMainInvokeEvent, sourcePath: string) => {
+    invalidateCache(sourcePath)
+    return { success: true }
+  })
+}
