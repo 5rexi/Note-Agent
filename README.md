@@ -12,7 +12,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-local--first-003B57?logo=sqlite&logoColor=white)
 
-[Screenshots](#screenshots) · [Why Note Agent](#why-note-agent) · [Quick start](#quick-start) · [Tools](#whats-in-the-toolbox) · [中文](#中文说明)
+[Why Note Agent](#why-note-agent) · [Quick start](#quick-start) · [Tools](#whats-in-the-toolbox) · [中文](#中文说明)
 
 </div>
 
@@ -42,16 +42,6 @@ Everything is local-first: your notes are files on disk, your task history is in
 - **Subagents and worktrees.** Fork the work: spin a subagent to research while the main task drafts; let the agent operate on a git worktree without touching your working tree.
 - **Cost tracking.** Every round logs tokens and dollar-spend per provider — you see the bill before you finish.
 
-## Screenshots
-
-<div align="center">
-
-| Workspace | Settings |
-| --- | --- |
-| ![Workspace](docs/demos/layout-screenshot.png) | ![Settings](docs/demos/settings-screenshot.png) |
-
-</div>
-
 ## Quick start
 
 > Requires **Node 18+** (Bun recommended) and a C toolchain (for `better-sqlite3`).
@@ -65,10 +55,11 @@ bun run dev                # launches Electron in dev mode (Vite + esbuild watch
 
 First launch:
 
-1. Open **Settings → 模型与 API** and paste an API key (OpenAI, Anthropic, or any OpenAI-compatible endpoint).
-2. **Settings → 网络与搜索** — toggle the built-in browser tool, paste a Brave Search key if you have one, or check "free-only" to stick to Wikipedia / HN / DuckDuckGo / Bing.
-3. Pick a workspace folder. The agent will create a `.note_agent/` subdirectory for its metadata (SQLite DB, `NOTEAGENT.md` project memory).
-4. Create a task. Start typing.
+1. Open **Settings → 外观** and switch to your native language.
+2. Open **Settings → AI Connection** and paste an API key (OpenAI, Anthropic, or any OpenAI-compatible endpoint).
+3. **Settings → Web & Search** — toggle the built-in browser tool, paste a Brave Search key if you have one, or check "free-only" to stick to Wikipedia / HN / DuckDuckGo / Bing.
+4. Pick a workspace folder. The agent will create a `.note_agent/` subdirectory for its metadata (SQLite DB, `NOTEAGENT.md` project memory).
+5. Create a task. Start typing.
 
 ### Build a release
 
@@ -134,22 +125,10 @@ Environment variables and CLI flags are documented in [`src/agent/config.ts`](sr
 
 ## Roadmap
 
-- [ ] macOS / Linux installers
+- [ ] Cron task support
 - [ ] First-class citation manager (Zotero bridge)
 - [ ] Outline view & section-level diff for long documents
-- [ ] Plugin marketplace (skills + MCP)
 - [ ] Optional cloud sync for cross-device task history
-
-## Contributing
-
-Contributions welcome — bug reports, feature requests, and PRs. Before opening a large PR, please file an issue so we can talk about scope.
-
-```bash
-bun test            # unit + integration tests
-bun run typecheck   # strict TS check
-```
-
-The codebase is strict TypeScript; new tools should ship with a `*.test.ts` next to them.
 
 ## License
 
