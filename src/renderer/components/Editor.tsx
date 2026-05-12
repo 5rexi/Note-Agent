@@ -73,6 +73,7 @@ export default function FileEditor() {
   const [content, setContent] = useState('')
   const [isDirty, setIsDirty] = useState(false)
   const [saveIndicator, setSaveIndicator] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [wordSaveStatus, setWordSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [editorFontSize, setEditorFontSize] = useState(14)
   const [editorFontFamily, setEditorFontFamily] = useState('"JetBrains Mono", "SF Mono", "Fira Code", "Consolas", "Courier New", "Segoe UI Mono", monospace')
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 })
@@ -107,6 +108,15 @@ export default function FileEditor() {
       }
     })
   }, [currentFile])
+
+  // Listen for WordViewer save status changes
+  useEffect(() => {
+    const handler = (e: any) => {
+      setWordSaveStatus(e.detail.status)
+    }
+    window.addEventListener('word-viewer:save-status', handler)
+    return () => window.removeEventListener('word-viewer:save-status', handler)
+  }, [])
 
   // Listen for word unpack events (edit XML mode)
   useEffect(() => {
@@ -938,6 +948,9 @@ export default function FileEditor() {
         <div className="flex items-center gap-3">
           {saveIndicator === 'saving' && <span style={{ color: 'var(--na-status-execute)' }}>保存中...</span>}
           {saveIndicator === 'saved' && <span>· 已自动保存</span>}
+          {wordSaveStatus === 'saving' && <span style={{ color: 'var(--na-status-execute)' }}>保存中...</span>}
+          {wordSaveStatus === 'saved' && <span>· 已自动保存</span>}
+          {wordSaveStatus === 'error' && <span style={{ color: 'var(--na-status-explore)' }}>保存失败</span>}
 
           {/* Background tasks */}
           {bgTasks.length > 0 && (

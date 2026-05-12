@@ -12,8 +12,13 @@ import {
   prettyPrintXml as prettyPrintXmlCore,
   autoRepairXml as autoRepairXmlCore,
   replaceParagraphText as replaceParagraphTextCore,
+  addParagraphText as addParagraphTextCore,
+  deleteParagraph as deleteParagraphCore,
+  modifyParagraphFormat as modifyParagraphFormatCore,
+  modifyGlobalFormat as modifyGlobalFormatCore,
   sanitizeXmlString,
   extractDocxRawText,
+  type FormatChange,
 } from '../agent/document'
 
 function getDb() {
@@ -628,6 +633,70 @@ export async function replaceParagraphText(
   })
 }
 
+// ── Add paragraph (delegates to agent/document, with db-backed undo hook) ──
+
+export async function addParagraph(
+  filePath: string,
+  paragraphIndex: number,
+  text: string,
+  tempBaseDir?: string,
+): Promise<{ success: boolean; error?: string }> {
+  return addParagraphTextCore(filePath, paragraphIndex, text, {
+    tempBaseDir,
+    beforeWrite: (originalBuffer) => {
+      const db = getDb()
+      if (db) db.pushFileHistory(filePath, originalBuffer.toString('base64'))
+    },
+  })
+}
+
+// ── Delete paragraph (delegates to agent/document, with db-backed undo hook) ──
+
+export async function deleteParagraph(
+  filePath: string,
+  paragraphIndex: number,
+  tempBaseDir?: string,
+): Promise<{ success: boolean; error?: string }> {
+  return deleteParagraphCore(filePath, paragraphIndex, {
+    tempBaseDir,
+    beforeWrite: (originalBuffer) => {
+      const db = getDb()
+      if (db) db.pushFileHistory(filePath, originalBuffer.toString('base64'))
+    },
+  })
+}
+
+// ── Modify paragraph format (delegates to agent/document, with db-backed undo hook) ──
+
+export async function modifyParagraphFormat(
+  filePath: string,
+  paragraphIndex: number,
+  changes: import('../agent/document').FormatChange[],
+  tempBaseDir?: string,
+): Promise<{ success: boolean; error?: string }> {
+  return modifyParagraphFormatCore(filePath, paragraphIndex, changes, {
+    tempBaseDir,
+    beforeWrite: (originalBuffer) => {
+      const db = getDb()
+      if (db) db.pushFileHistory(filePath, originalBuffer.toString('base64'))
+    },
+  })
+}
+
+export async function modifyGlobalFormat(
+  filePath: string,
+  changes: import('../agent/document').FormatChange[],
+  tempBaseDir?: string,
+): Promise<{ success: boolean; error?: string }> {
+  return modifyGlobalFormatCore(filePath, changes, {
+    tempBaseDir,
+    beforeWrite: (originalBuffer) => {
+      const db = getDb()
+      if (db) db.pushFileHistory(filePath, originalBuffer.toString('base64'))
+    },
+  })
+}
+
 // ── Undo docx change ──
 
 function undoDocxChange(filePath: string): { success: boolean; error?: string; version?: number } {
@@ -791,6 +860,21 @@ export function registerWordHandlers() {
 
   ipcMain.handle('word:replaceParagraph', async (_event: Electron.IpcMainInvokeEvent, filePath: string, paragraphIndex: number, newText: string) => {
     return replaceParagraphText(filePath, paragraphIndex, newText)
+  })
+
+  ipcMain.handle('word:addParagraph', async (_event: Electron.IpcMainInvokeEvent, filePath: string, paragraphIndex: number, text: string) => {
+    return addParagraph(filePath, paragraphIndex, text)
+  })
+
+  ipcMain.handle('word:deleteParagraph', async (_event: Electron.IpcMainInvokeEvent, filePath: string, paragraphIndex: number) => {
+    return deleteParagraph(filePath, paragraphIndex)
+  })
+
+  ipcMain.handle('word:modifyFormat', async (_event: Electron.IpcMainInvokeEvent, filePath: string, target: { type: 'paragraph'; paragraphIndex: number } | { type: 'global' }, changes: FormatChange[]) => {
+    if (target.type === 'paragraph') {
+      return modifyParagraphFormat(filePath, target.paragraphIndex, changes)
+    }
+    return modifyGlobalFormat(filePath, changes)
   })
 
   ipcMain.handle('word:undoChange', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {

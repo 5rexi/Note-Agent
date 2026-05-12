@@ -41,6 +41,9 @@ import {
   SearchSemanticScholarTool,
   SearchPubMedTool,
   ReplaceWordParagraphTool,
+  AddWordParagraphTool,
+  DeleteWordParagraphTool,
+  ModifyWordFormatTool,
   DoneTool,
   ModelRouter,
   createTriModelConfig,
@@ -114,6 +117,9 @@ function initTools() {
     SearchSemanticScholarTool,
     SearchPubMedTool,
     ReplaceWordParagraphTool,
+    AddWordParagraphTool,
+    DeleteWordParagraphTool,
+    ModifyWordFormatTool,
     DoneTool,
   ]
   tools.forEach(registerTool)

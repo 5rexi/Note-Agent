@@ -31,6 +31,9 @@ import {
   HttpTool,
   IndexerTool,
   ReplaceWordParagraphTool,
+  AddWordParagraphTool,
+  DeleteWordParagraphTool,
+  ModifyWordFormatTool,
   ModelRouter,
   createDualModelConfig,
   createTriModelConfig,
@@ -296,6 +299,9 @@ async function main(): Promise<void> {
     new HttpTool(),
     new IndexerTool(),
     ReplaceWordParagraphTool,
+    AddWordParagraphTool,
+    DeleteWordParagraphTool,
+    ModifyWordFormatTool,
   ]
   tools.forEach(registerTool)
 

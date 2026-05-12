@@ -248,7 +248,8 @@ export default function App() {
           const task = tasks.find((t) => t.id === currentTaskId)
           if (task) {
             // Creation tasks (new Skill/MCP/API) default to execute mode
-            const defaultMode = task.title.startsWith('新建 ') ? 'execute' : 'explore'
+            const isCreationTask = task.status === 'temp'
+            const defaultMode = isCreationTask ? 'execute' : 'explore'
             const newSession = await window.electronAPI.createSession(
               currentTaskId,
               task.title,
@@ -256,8 +257,8 @@ export default function App() {
             )
             setSession(newSession)
             // Auto-add assistant prompt for creation tasks
-            if (task.title.startsWith('新建 ')) {
-              const typeLabel = task.title.replace('新建 ', '')
+            if (isCreationTask) {
+              const typeLabel = task.title.replace(/^.*?\s/, '')
               const promptText = `请描述你想要创建的 ${typeLabel}，包括：\n\n- 用途/场景\n- 触发条件（如果有）\n- 任何参考链接或文档\n\n你可以提供 GitHub 链接、README 或其他参考资料，我会自动获取内容并为你生成配置。`
               const assistantMsg = await window.electronAPI.createMessage(newSession.id, 'assistant', promptText)
               setMessages([assistantMsg])

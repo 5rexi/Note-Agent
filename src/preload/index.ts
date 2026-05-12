@@ -78,6 +78,9 @@ export interface ElectronAPI {
   wordUnwatchExternal: (path: string) => Promise<{ success: boolean }>
   onWordExternalChanged: (callback: (filePath: string) => void) => () => void
   wordReplaceParagraph: (path: string, paragraphIndex: number, newText: string) => Promise<{ success: boolean; error?: string }>
+  wordAddParagraph: (path: string, paragraphIndex: number, text: string) => Promise<{ success: boolean; error?: string }>
+  wordDeleteParagraph: (path: string, paragraphIndex: number) => Promise<{ success: boolean; error?: string }>
+  wordModifyFormat: (path: string, target: { type: 'paragraph'; paragraphIndex: number } | { type: 'global' }, changes: Array<{ property: string; value: any }>) => Promise<{ success: boolean; error?: string }>
   wordUndoChange: (path: string) => Promise<{ success: boolean; error?: string }>
   pdfGetCachedPath: (path: string) => Promise<{ pdfPath: string | null; isFresh: boolean }>
   pdfInvalidateCache: (path: string) => Promise<{ success: boolean }>
@@ -252,6 +255,9 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener('word:external-changed', handler)
   },
   wordReplaceParagraph: (path, paragraphIndex, newText) => ipcRenderer.invoke('word:replaceParagraph', path, paragraphIndex, newText),
+  wordAddParagraph: (path, paragraphIndex, text) => ipcRenderer.invoke('word:addParagraph', path, paragraphIndex, text),
+  wordDeleteParagraph: (path, paragraphIndex) => ipcRenderer.invoke('word:deleteParagraph', path, paragraphIndex),
+  wordModifyFormat: (path, target, changes) => ipcRenderer.invoke('word:modifyFormat', path, target, changes),
   wordUndoChange: (path) => ipcRenderer.invoke('word:undoChange', path),
   pdfGetCachedPath: (path) => ipcRenderer.invoke('pdf:getCachedPath', path),
   pdfInvalidateCache: (path) => ipcRenderer.invoke('pdf:invalidateCache', path),

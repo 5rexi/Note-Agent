@@ -51,6 +51,9 @@ export { SearchArxivTool } from './tools/impl/searchArxiv'
 export { SearchSemanticScholarTool } from './tools/impl/searchSemanticScholar'
 export { SearchPubMedTool } from './tools/impl/searchPubMed'
 export { ReplaceWordParagraphTool } from './tools/impl/replaceWordParagraph'
+export { AddWordParagraphTool } from './tools/impl/addWordParagraph'
+export { DeleteWordParagraphTool } from './tools/impl/deleteWordParagraph'
+export { ModifyWordFormatTool } from './tools/impl/modifyWordFormat'
 export { DoneTool } from './tools/impl/done'
 
 // Subsystems

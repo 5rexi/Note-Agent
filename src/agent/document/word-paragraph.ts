@@ -47,6 +47,11 @@ export interface ReplaceParagraphOptions {
   beforeWrite?: (originalBuffer: Buffer) => void
 }
 
+export interface FormatChange {
+  property: 'headingLevel' | 'alignment' | 'fontSize' | 'bold' | 'italic' | 'color' | 'indentation'
+  value: any
+}
+
 /**
  * Pretty-prints a Word XML document with simple newlines + indentation.
  * Inline elements (<w:r>, <w:t>, etc.) are kept on a single line so
@@ -342,5 +347,471 @@ export async function extractDocxRawText(filePath: string): Promise<{ text: stri
     return { text: texts.join('') }
   } catch (err: any) {
     return { text: '', error: err.message || 'extraction failed' }
+  }
+}
+
+// ── Helpers for XML manipulation ──
+
+function getOrCreateChild(parent: Element, tagName: string, doc: Document): Element {
+  const existing = parent.getElementsByTagName(tagName)[0]
+  if (existing) return existing
+  const el = doc.createElement(tagName)
+  parent.appendChild(el)
+  return el
+}
+
+function removeChildIfExists(parent: Element, tagName: string): void {
+  const existing = parent.getElementsByTagName(tagName)[0]
+  if (existing) {
+    parent.removeChild(existing)
+  }
+}
+
+function ensureRPr(run: Element, doc: Document): Element {
+  let rPr = run.getElementsByTagName('w:rPr')[0]
+  if (!rPr) {
+    rPr = doc.createElement('w:rPr')
+    run.insertBefore(rPr, run.firstChild)
+  }
+  return rPr
+}
+
+function setBoolRPr(rPr: Element, tagName: string, value: boolean | null, doc: Document): void {
+  if (!value) {
+    removeChildIfExists(rPr, tagName)
+    return
+  }
+  const el = getOrCreateChild(rPr, tagName, doc)
+  el.setAttribute('w:val', '1')
+}
+
+function setValRPr(rPr: Element, tagName: string, attrName: string, value: string | number | null, doc: Document): void {
+  if (value === null || value === undefined || value === '') {
+    removeChildIfExists(rPr, tagName)
+    return
+  }
+  const el = getOrCreateChild(rPr, tagName, doc)
+  el.setAttribute(attrName, String(value))
+}
+
+function setParagraphPPr(pPr: Element, change: FormatChange, doc: Document): void {
+  switch (change.property) {
+    case 'headingLevel': {
+      if (change.value === null || change.value === undefined) {
+        removeChildIfExists(pPr, 'w:pStyle')
+      } else {
+        const level = Math.max(1, Math.min(6, Number(change.value)))
+        const el = getOrCreateChild(pPr, 'w:pStyle', doc)
+        el.setAttribute('w:val', `Heading${level}`)
+      }
+      break
+    }
+    case 'alignment': {
+      if (!change.value) {
+        removeChildIfExists(pPr, 'w:jc')
+      } else {
+        const el = getOrCreateChild(pPr, 'w:jc', doc)
+        el.setAttribute('w:val', String(change.value))
+      }
+      break
+    }
+    case 'indentation': {
+      if (!change.value || typeof change.value !== 'object') {
+        removeChildIfExists(pPr, 'w:ind')
+      } else {
+        const el = getOrCreateChild(pPr, 'w:ind', doc)
+        const v = change.value as Record<string, number | undefined>
+        if (v.left !== undefined) el.setAttribute('w:left', String(v.left))
+        if (v.right !== undefined) el.setAttribute('w:right', String(v.right))
+        if (v.firstLine !== undefined) el.setAttribute('w:firstLine', String(v.firstLine))
+      }
+      break
+    }
+  }
+}
+
+function setRunRPr(rPr: Element, change: FormatChange, doc: Document): void {
+  switch (change.property) {
+    case 'fontSize': {
+      if (change.value === null || change.value === undefined) {
+        removeChildIfExists(rPr, 'w:sz')
+        removeChildIfExists(rPr, 'w:szCs')
+      } else {
+        const val = String(change.value)
+        setValRPr(rPr, 'w:sz', 'w:val', val, doc)
+        setValRPr(rPr, 'w:szCs', 'w:val', val, doc)
+      }
+      break
+    }
+    case 'bold': {
+      setBoolRPr(rPr, 'w:b', change.value, doc)
+      break
+    }
+    case 'italic': {
+      setBoolRPr(rPr, 'w:i', change.value, doc)
+      break
+    }
+    case 'color': {
+      if (!change.value) {
+        removeChildIfExists(rPr, 'w:color')
+      } else {
+        const hex = String(change.value).replace(/^#/, '')
+        setValRPr(rPr, 'w:color', 'w:val', hex, doc)
+      }
+      break
+    }
+  }
+}
+
+// ── Add paragraph ──
+
+/**
+ * Insert a new paragraph before the specified paragraph index.
+ * The new paragraph inherits formatting from the previous paragraph (or the
+ * target paragraph if inserting at the beginning).
+ */
+export async function addParagraphText(
+  filePath: string,
+  paragraphIndex: number,
+  text: string,
+  options: ReplaceParagraphOptions = {},
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const originalBuffer = readFileSync(filePath)
+    if (options.beforeWrite) {
+      try {
+        options.beforeWrite(originalBuffer)
+      } catch (hookErr: any) {
+        return { success: false, error: 'history hook failed: ' + (hookErr?.message ?? hookErr) }
+      }
+    }
+
+    const tempRoot = options.tempBaseDir
+      ? join(options.tempBaseDir, '.note_agent', 'temp')
+      : tmpdir()
+    const tempDir = join(tempRoot, `docx-add-${basename(filePath, '.docx')}-${Date.now()}`)
+    const unpackResult = await unpackDocx(filePath, tempDir)
+    if (!unpackResult.success) {
+      return { success: false, error: unpackResult.error || 'unpack failed' }
+    }
+
+    const docXmlPath = join(tempDir, 'word', 'document.xml')
+    if (!existsSync(docXmlPath)) {
+      return { success: false, error: 'word/document.xml not found' }
+    }
+    let xmlContent = sanitizeXmlString(readFileSync(docXmlPath, 'utf-8'))
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(xmlContent, 'application/xml')
+
+    const body = doc.getElementsByTagName('w:body')[0]
+    if (!body) {
+      return { success: false, error: 'w:body not found' }
+    }
+    const paragraphs = body.getElementsByTagName('w:p')
+
+    if (paragraphIndex < 0 || paragraphIndex > paragraphs.length) {
+      return { success: false, error: `paragraph ${paragraphIndex + 1} out of range (total ${paragraphs.length})` }
+    }
+
+    // Determine format source: prefer previous paragraph, fall back to target paragraph
+    const formatSourceIndex = paragraphIndex > 0 ? paragraphIndex - 1 : (paragraphs.length > 0 ? 0 : -1)
+    let pPr: any = null
+    let rPr: any = null
+
+    if (formatSourceIndex >= 0 && formatSourceIndex < paragraphs.length) {
+      const sourcePara = paragraphs[formatSourceIndex]
+      const pPrList = sourcePara.getElementsByTagName('w:pPr')
+      if (pPrList.length > 0) {
+        pPr = pPrList[0].cloneNode(true)
+      }
+      const runs = sourcePara.getElementsByTagName('w:r')
+      if (runs.length > 0) {
+        const rPrList = runs[0].getElementsByTagName('w:rPr')
+        if (rPrList.length > 0) {
+          rPr = rPrList[0].cloneNode(true)
+        }
+      }
+    }
+
+    const newParagraph = doc.createElement('w:p')
+    if (pPr) {
+      newParagraph.appendChild(pPr)
+    }
+
+    const newRun = doc.createElement('w:r')
+    if (rPr) {
+      newRun.appendChild(rPr)
+    }
+
+    const newTextNode = doc.createElement('w:t')
+    const sanitizedText = sanitizeXmlString(text)
+    if (/^\s+|\s+$/.test(sanitizedText)) {
+      newTextNode.setAttribute('xml:space', 'preserve')
+    }
+    newTextNode.textContent = sanitizedText
+    newRun.appendChild(newTextNode)
+    newParagraph.appendChild(newRun)
+
+    if (paragraphIndex < paragraphs.length) {
+      const targetPara = paragraphs[paragraphIndex]
+      body.insertBefore(newParagraph, targetPara as any)
+    } else {
+      body.appendChild(newParagraph)
+    }
+
+    const serializer = new XMLSerializer()
+    xmlContent = serializer.serializeToString(doc)
+    xmlContent = autoRepairXml(xmlContent)
+    writeFileSync(docXmlPath, xmlContent, 'utf-8')
+
+    const packResult = await packDocx(tempDir, filePath)
+    if (!packResult.success) {
+      return { success: false, error: packResult.error || 'pack failed' }
+    }
+
+    try { rmSync(tempDir, { recursive: true }) } catch {}
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'add paragraph failed' }
+  }
+}
+
+// ── Delete paragraph ──
+
+/**
+ * Delete the paragraph at the specified index.
+ */
+export async function deleteParagraph(
+  filePath: string,
+  paragraphIndex: number,
+  options: ReplaceParagraphOptions = {},
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const originalBuffer = readFileSync(filePath)
+    if (options.beforeWrite) {
+      try {
+        options.beforeWrite(originalBuffer)
+      } catch (hookErr: any) {
+        return { success: false, error: 'history hook failed: ' + (hookErr?.message ?? hookErr) }
+      }
+    }
+
+    const tempRoot = options.tempBaseDir
+      ? join(options.tempBaseDir, '.note_agent', 'temp')
+      : tmpdir()
+    const tempDir = join(tempRoot, `docx-delete-${basename(filePath, '.docx')}-${Date.now()}`)
+    const unpackResult = await unpackDocx(filePath, tempDir)
+    if (!unpackResult.success) {
+      return { success: false, error: unpackResult.error || 'unpack failed' }
+    }
+
+    const docXmlPath = join(tempDir, 'word', 'document.xml')
+    if (!existsSync(docXmlPath)) {
+      return { success: false, error: 'word/document.xml not found' }
+    }
+    let xmlContent = sanitizeXmlString(readFileSync(docXmlPath, 'utf-8'))
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(xmlContent, 'application/xml')
+
+    const body = doc.getElementsByTagName('w:body')[0]
+    if (!body) {
+      return { success: false, error: 'w:body not found' }
+    }
+    const paragraphs = body.getElementsByTagName('w:p')
+    if (paragraphIndex < 0 || paragraphIndex >= paragraphs.length) {
+      return { success: false, error: `paragraph ${paragraphIndex + 1} not found (total ${paragraphs.length})` }
+    }
+
+    const targetPara = paragraphs[paragraphIndex]
+    body.removeChild(targetPara)
+
+    const serializer = new XMLSerializer()
+    xmlContent = serializer.serializeToString(doc)
+    xmlContent = autoRepairXml(xmlContent)
+    writeFileSync(docXmlPath, xmlContent, 'utf-8')
+
+    const packResult = await packDocx(tempDir, filePath)
+    if (!packResult.success) {
+      return { success: false, error: packResult.error || 'pack failed' }
+    }
+
+    try { rmSync(tempDir, { recursive: true }) } catch {}
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'delete paragraph failed' }
+  }
+}
+
+// ── Modify paragraph format ──
+
+/**
+ * Apply format changes to a specific paragraph.
+ */
+export async function modifyParagraphFormat(
+  filePath: string,
+  paragraphIndex: number,
+  changes: FormatChange[],
+  options: ReplaceParagraphOptions = {},
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const originalBuffer = readFileSync(filePath)
+    if (options.beforeWrite) {
+      try {
+        options.beforeWrite(originalBuffer)
+      } catch (hookErr: any) {
+        return { success: false, error: 'history hook failed: ' + (hookErr?.message ?? hookErr) }
+      }
+    }
+
+    const tempRoot = options.tempBaseDir
+      ? join(options.tempBaseDir, '.note_agent', 'temp')
+      : tmpdir()
+    const tempDir = join(tempRoot, `docx-format-${basename(filePath, '.docx')}-${Date.now()}`)
+    const unpackResult = await unpackDocx(filePath, tempDir)
+    if (!unpackResult.success) {
+      return { success: false, error: unpackResult.error || 'unpack failed' }
+    }
+
+    const docXmlPath = join(tempDir, 'word', 'document.xml')
+    if (!existsSync(docXmlPath)) {
+      return { success: false, error: 'word/document.xml not found' }
+    }
+    let xmlContent = sanitizeXmlString(readFileSync(docXmlPath, 'utf-8'))
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(xmlContent, 'application/xml')
+
+    const body = doc.getElementsByTagName('w:body')[0]
+    if (!body) {
+      return { success: false, error: 'w:body not found' }
+    }
+    const paragraphs = body.getElementsByTagName('w:p')
+    if (paragraphIndex < 0 || paragraphIndex >= paragraphs.length) {
+      return { success: false, error: `paragraph ${paragraphIndex + 1} not found (total ${paragraphs.length})` }
+    }
+
+    const paragraph = paragraphs[paragraphIndex]
+    applyFormatToParagraph(paragraph as any, changes, doc)
+
+    const serializer = new XMLSerializer()
+    xmlContent = serializer.serializeToString(doc)
+    xmlContent = autoRepairXml(xmlContent)
+    writeFileSync(docXmlPath, xmlContent, 'utf-8')
+
+    const packResult = await packDocx(tempDir, filePath)
+    if (!packResult.success) {
+      return { success: false, error: packResult.error || 'pack failed' }
+    }
+
+    try { rmSync(tempDir, { recursive: true }) } catch {}
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'modify format failed' }
+  }
+}
+
+/**
+ * Apply format changes globally (all paragraphs).
+ */
+export async function modifyGlobalFormat(
+  filePath: string,
+  changes: FormatChange[],
+  options: ReplaceParagraphOptions = {},
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const originalBuffer = readFileSync(filePath)
+    if (options.beforeWrite) {
+      try {
+        options.beforeWrite(originalBuffer)
+      } catch (hookErr: any) {
+        return { success: false, error: 'history hook failed: ' + (hookErr?.message ?? hookErr) }
+      }
+    }
+
+    const tempRoot = options.tempBaseDir
+      ? join(options.tempBaseDir, '.note_agent', 'temp')
+      : tmpdir()
+    const tempDir = join(tempRoot, `docx-format-${basename(filePath, '.docx')}-${Date.now()}`)
+    const unpackResult = await unpackDocx(filePath, tempDir)
+    if (!unpackResult.success) {
+      return { success: false, error: unpackResult.error || 'unpack failed' }
+    }
+
+    const docXmlPath = join(tempDir, 'word', 'document.xml')
+    if (!existsSync(docXmlPath)) {
+      return { success: false, error: 'word/document.xml not found' }
+    }
+    let xmlContent = sanitizeXmlString(readFileSync(docXmlPath, 'utf-8'))
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(xmlContent, 'application/xml')
+
+    const body = doc.getElementsByTagName('w:body')[0]
+    if (!body) {
+      return { success: false, error: 'w:body not found' }
+    }
+    const paragraphs = body.getElementsByTagName('w:p')
+
+    for (let i = 0; i < paragraphs.length; i++) {
+      applyFormatToParagraph(paragraphs[i] as any, changes, doc)
+    }
+
+    const serializer = new XMLSerializer()
+    xmlContent = serializer.serializeToString(doc)
+    xmlContent = autoRepairXml(xmlContent)
+    writeFileSync(docXmlPath, xmlContent, 'utf-8')
+
+    const packResult = await packDocx(tempDir, filePath)
+    if (!packResult.success) {
+      return { success: false, error: packResult.error || 'pack failed' }
+    }
+
+    try { rmSync(tempDir, { recursive: true }) } catch {}
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'modify global format failed' }
+  }
+}
+
+function applyFormatToParagraph(paragraph: any, changes: FormatChange[], doc: any): void {
+  const pPrList = paragraph.getElementsByTagName('w:pPr')
+  let pPr: any = pPrList.length > 0 ? pPrList[0] : null
+
+  for (const change of changes) {
+    if (change.property === 'headingLevel' || change.property === 'alignment' || change.property === 'indentation') {
+      if (!pPr) {
+        pPr = doc.createElement('w:pPr')
+        paragraph.insertBefore(pPr, paragraph.firstChild as any)
+      }
+      setParagraphPPr(pPr, change, doc)
+    }
+  }
+
+  // Run-level properties: apply to all runs in the paragraph
+  const runChanges = changes.filter(c => c.property === 'fontSize' || c.property === 'bold' || c.property === 'italic' || c.property === 'color')
+  if (runChanges.length > 0) {
+    const runs = paragraph.getElementsByTagName('w:r')
+    for (let i = 0; i < runs.length; i++) {
+      const rPr = ensureRPr(runs[i], doc)
+      for (const change of runChanges) {
+        setRunRPr(rPr, change, doc)
+      }
+    }
+
+    // Also update default run properties in pPr if present
+    if (pPr) {
+      const pRPrList = pPr.getElementsByTagName('w:rPr')
+      if (pRPrList.length > 0) {
+        for (const change of runChanges) {
+          setRunRPr(pRPrList[0], change, doc)
+        }
+      }
+    }
   }
 }
