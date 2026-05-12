@@ -5,6 +5,7 @@ export interface Workspace {
   name: string
   path: string
   model_tier?: 'fast' | 'balanced' | 'strong' | null
+  editor_state?: string | null
   created_at: number
   updated_at: number
 }

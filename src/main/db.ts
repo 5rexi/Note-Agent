@@ -127,6 +127,12 @@ export class Database {
       this.db.prepare("ALTER TABLE workspaces ADD COLUMN model_tier TEXT CHECK(model_tier IN ('fast', 'balanced', 'strong'))").run()
     }
 
+    // Migration: add editor_state to workspaces if column doesn't exist
+    const hasWorkspaceEditorState = workspaceColumns.find((c) => c.name === 'editor_state')
+    if (!hasWorkspaceEditorState) {
+      this.db.prepare("ALTER TABLE workspaces ADD COLUMN editor_state TEXT").run()
+    }
+
     // Migration: add tier_override and model_override to sessions
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all() as any[]
     const hasTierOverride = sessionColumns.find((c) => c.name === 'tier_override')
@@ -258,12 +264,13 @@ export class Database {
     return data
   }
 
-  updateWorkspace(id: string, data: Partial<{ name: string; path: string; model_tier?: string | null }>) {
+  updateWorkspace(id: string, data: Partial<{ name: string; path: string; model_tier?: string | null; editor_state?: string | null }>) {
     const sets: string[] = []
     const vals: any[] = []
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name) }
     if (data.path !== undefined) { sets.push('path = ?'); vals.push(data.path) }
     if (data.model_tier !== undefined) { sets.push('model_tier = ?'); vals.push(data.model_tier) }
+    if (data.editor_state !== undefined) { sets.push('editor_state = ?'); vals.push(data.editor_state) }
     sets.push('updated_at = unixepoch()')
     vals.push(id)
     this.db.prepare(`UPDATE workspaces SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
@@ -274,8 +281,11 @@ export class Database {
   }
 
   // ── Task Folders ──
-  getTaskFolders(workspaceId: string) {
-    return this.db.prepare('SELECT * FROM task_folders WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId)
+  getTaskFolders(workspaceId?: string) {
+    if (workspaceId) {
+      return this.db.prepare('SELECT * FROM task_folders WHERE workspace_id = ? ORDER BY created_at DESC').all(workspaceId)
+    }
+    return this.db.prepare('SELECT * FROM task_folders ORDER BY created_at DESC').all()
   }
 
   createTaskFolder(data: { id: string; workspace_id: string; name: string }) {

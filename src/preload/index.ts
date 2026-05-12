@@ -10,7 +10,7 @@ export interface ElectronAPI {
   deleteWorkspace: (id: string) => Promise<void>
 
   // Task Folders
-  getTaskFolders: (workspaceId: string) => Promise<any[]>
+  getTaskFolders: (workspaceId?: string) => Promise<any[]>
   createTaskFolder: (data: any) => Promise<any>
   updateTaskFolder: (id: string, data: any) => Promise<void>
   deleteTaskFolder: (id: string) => Promise<void>

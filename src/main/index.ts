@@ -237,7 +237,7 @@ function registerDbHandlers() {
   ipcMain.handle('db:messages:list', (_e, sessionId) => db.getMessages(sessionId))
   ipcMain.handle('db:messages:create', (_e, data) => db.createMessage(data))
 
-  ipcMain.handle('db:taskFolders:list', (_e, workspaceId) => db.getTaskFolders(workspaceId))
+  ipcMain.handle('db:taskFolders:list', (_e, workspaceId?) => db.getTaskFolders(workspaceId))
   ipcMain.handle('db:taskFolders:create', (_e, data) => db.createTaskFolder(data))
   ipcMain.handle('db:taskFolders:update', (_e, id, data) => db.updateTaskFolder(id, data))
   ipcMain.handle('db:taskFolders:delete', (_e, id) => db.deleteTaskFolder(id))

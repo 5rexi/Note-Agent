@@ -46,23 +46,63 @@ const TAB_CONFIG: Record<TabType, { label: string; icon: typeof Wrench }> = {
   api: { label: 'API', icon: Globe },
 }
 
+/**
+ * Parse YAML-ish frontmatter from SKILL.md / skill.md.
+ * Supports simple key: value, multiline |/>, and nested metadata.trigger.
+ */
 function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
   const result = { frontmatter: {} as Record<string, string>, body: content }
-  if (!content.startsWith('---')) return result
-  const endIdx = content.indexOf('---', 3)
-  if (endIdx === -1) return result
-  const fmText = content.slice(3, endIdx).trim()
-  const body = content.slice(endIdx + 3).trim()
-  const fm: Record<string, string> = {}
-  for (const line of fmText.split('\n')) {
+  if (!content.trimStart().startsWith('---')) return result
+
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?/)
+  if (!match) return result
+
+  const fmText = match[1]
+  result.body = content.slice(match[0].length)
+
+  const lines = fmText.split('\n')
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trimEnd()
     const colonIdx = line.indexOf(':')
-    if (colonIdx > 0) {
-      const key = line.slice(0, colonIdx).trim()
-      const value = line.slice(colonIdx + 1).trim()
-      fm[key] = value
+    if (colonIdx <= 0) { i++; continue }
+
+    const key = line.slice(0, colonIdx).trim()
+    let value = line.slice(colonIdx + 1).trim()
+
+    // Multiline with | or > or empty first line
+    if (value === '|' || value === '>' || value === '') {
+      i++
+      const parts: string[] = []
+      while (i < lines.length) {
+        const next = lines[i]
+        if (/^\w+:\s*/.test(next) && !next.startsWith(' ')) break
+        parts.push(next.trim())
+        i++
+      }
+      result.frontmatter[key] = parts.join(' ').trim()
+      continue
     }
+
+    // Check continuation lines (indented)
+    i++
+    const parts = [value]
+    while (i < lines.length) {
+      const next = lines[i]
+      if (/^\w+:\s*/.test(next) && !next.startsWith(' ')) break
+      if (next.startsWith('  ') || next.startsWith('\t')) {
+        parts.push(next.trim())
+      }
+      i++
+    }
+    result.frontmatter[key] = parts.join(' ').trim()
   }
-  return { frontmatter: fm, body }
+
+  // metadata.trigger
+  const triggerMatch = fmText.match(/metadata:[\s\S]*?trigger:\s*(.+)/)
+  if (triggerMatch) result.frontmatter.trigger = triggerMatch[1].trim()
+
+  return result
 }
 
 export default function ManagerModal({ open, onClose, workspacePath, initialTab = 'skills', onCreateNew }: ManagerModalProps) {
@@ -96,28 +136,34 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
 
   async function loadSkills() {
     const items: SkillItem[] = []
-    const homeDir = await window.electronAPI.getHomeDir()
-    const dirs = [
-      { base: `${homeDir}/.note_agent/skills`, source: 'Global' },
-      { base: `${workspacePath}/.note_agent/skills`, source: 'Workspace' },
-    ]
-    for (const { base, source } of dirs) {
-      const result = await window.electronAPI.listFiles(base)
-      if (result.error || !result.entries) continue
+    const base = window.electronAPI.pathJoin(workspacePath, '.note_agent', 'skills')
+    const result = await window.electronAPI.listFiles(base)
+    if (!result.error && result.entries) {
       for (const entry of result.entries) {
         if (entry.type !== 'directory') continue
-        const skillMdPath = `${base}/${entry.name}/skill.md`
-        const readResult = await window.electronAPI.readFile(skillMdPath)
+
+        // Try SKILL.md (universal) first, then skill.md (legacy)
+        const skillMdPath = window.electronAPI.pathJoin(base, entry.name, 'SKILL.md')
+        const skillMdPathLower = window.electronAPI.pathJoin(base, entry.name, 'skill.md')
+        let readResult = await window.electronAPI.readFile(skillMdPath)
+        let usedPath = skillMdPath
+        if (readResult.error) {
+          readResult = await window.electronAPI.readFile(skillMdPathLower)
+          usedPath = skillMdPathLower
+        }
         if (readResult.error) continue
+
         const { frontmatter, body } = parseFrontmatter(readResult.content)
+        const desc = frontmatter.description || frontmatter.desc || ''
+        const trigger = frontmatter.trigger || frontmatter['metadata.trigger'] || ''
         items.push({
           id: entry.name,
           name: frontmatter.name || entry.name,
-          description: frontmatter.description || '',
-          source,
-          path: skillMdPath,
+          description: desc || trigger,
+          source: 'Workspace',
+          path: usedPath,
           content: body,
-          alwaysInject: frontmatter.alwaysInject === 'true',
+          alwaysInject: frontmatter.alwaysInject === 'true' || frontmatter.alwaysInject === 'yes',
         })
       }
     }
@@ -127,7 +173,7 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
 
   async function loadMCPs() {
     const homeDir = await window.electronAPI.getHomeDir()
-    const result = await window.electronAPI.readFile(`${homeDir}/.note_agent/mcp.json`)
+    const result = await window.electronAPI.readFile(window.electronAPI.pathJoin(homeDir, '.note_agent', 'mcp.json'))
     if (result.error) {
       setMcps([])
       setSelectedId(null)
@@ -146,12 +192,13 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
 
   async function loadAPIs() {
     const items: APIItem[] = []
-    const base = `${workspacePath}/.note_agent/apis`
+    const base = window.electronAPI.pathJoin(workspacePath, '.note_agent', 'apis')
     const result = await window.electronAPI.listFiles(base)
     if (!result.error && result.entries) {
       for (const entry of result.entries) {
         if (entry.type !== 'file' || !entry.name.endsWith('.json')) continue
-        const readResult = await window.electronAPI.readFile(`${base}/${entry.name}`)
+        const filePath = window.electronAPI.pathJoin(base, entry.name)
+        const readResult = await window.electronAPI.readFile(filePath)
         if (readResult.error) continue
         try {
           const config = JSON.parse(readResult.content)
@@ -161,7 +208,7 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
             name: config.name || id,
             description: config.description || '',
             baseUrl: config.baseUrl || '',
-            path: `${base}/${entry.name}`,
+            path: filePath,
             content: readResult.content,
           })
         } catch {
@@ -175,7 +222,7 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
 
   async function handleDeleteSkill(skill: SkillItem) {
     if (!confirm(`确定要删除技能 "${skill.name}" 吗？`)) return
-    const base = skill.path.replace(/\/[^/]+$/, '') // parent dir of skill.md
+    const base = window.electronAPI.pathDirname(skill.path) // parent dir of skill.md
     const slug = skill.id
     const result = await window.electronAPI.deleteFile(base, slug)
     if (result.success) {
@@ -189,7 +236,7 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
   async function handleDeleteMCP(mcp: MCPItem) {
     if (!confirm(`确定要删除 MCP 服务器 "${mcp.name}" 吗？`)) return
     const homeDir = await window.electronAPI.getHomeDir()
-    const mcpPath = `${homeDir}/.note_agent/mcp.json`
+    const mcpPath = window.electronAPI.pathJoin(homeDir, '.note_agent', 'mcp.json')
     const readResult = await window.electronAPI.readFile(mcpPath)
     if (readResult.error) {
       toast.error('读取 MCP 配置失败')
@@ -212,7 +259,7 @@ export default function ManagerModal({ open, onClose, workspacePath, initialTab 
 
   async function handleDeleteAPI(api: APIItem) {
     if (!confirm(`确定要删除 API "${api.name}" 吗？`)) return
-    const base = `${workspacePath}/.note_agent/apis`
+    const base = window.electronAPI.pathJoin(workspacePath, '.note_agent', 'apis')
     const result = await window.electronAPI.deleteFile(base, `${api.id}.json`)
     if (result.success) {
       toast.success('API 已删除')

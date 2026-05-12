@@ -8,15 +8,19 @@ import { loadSkills, formatSkillsContext, getSkillPrompt } from './loader'
 
 const TEST_WS = join(process.cwd(), 'test-workspace-skills')
 const TEST_SKILLS_DIR = join(TEST_WS, '.note_agent', 'skills')
+const ORIGINAL_SKILLS_HOME = process.env.NOTE_AGENT_SKILLS_HOME
 
 describe('loadSkills', () => {
   beforeEach(() => {
+    // Isolate from real user skill directories during tests
+    process.env.NOTE_AGENT_SKILLS_HOME = TEST_WS
     if (!existsSync(TEST_SKILLS_DIR)) {
       mkdirSync(TEST_SKILLS_DIR, { recursive: true })
     }
   })
 
   afterEach(() => {
+    process.env.NOTE_AGENT_SKILLS_HOME = ORIGINAL_SKILLS_HOME
     if (existsSync(TEST_WS)) {
       rmSync(TEST_WS, { recursive: true, force: true })
     }
@@ -72,6 +76,38 @@ describe('loadSkills', () => {
     const skills = loadSkills(TEST_WS)
     expect(skills.length).toBe(2)
     expect(skills.map((s) => s.id).sort()).toEqual(['skill-a', 'skill-b'])
+  })
+
+  it('should load universal SKILL.md format with YAML frontmatter', () => {
+    const skillDir = join(TEST_SKILLS_DIR, 'humanizer')
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      '---\nname: humanizer-zh\ndescription: |\n  去除文本中的 AI 生成痕迹。\n  使内容更自然、更像人类书写。\nmetadata:\n  trigger: 编辑或审阅文本时\n---\n\n# Humanizer\n\n你是一位文字编辑，专门去除 AI 痕迹。\n\n## 核心规则\n\n1. 删除填充短语\n2. 打破公式结构\n',
+      'utf-8',
+    )
+
+    const skills = loadSkills(TEST_WS)
+    const skill = skills.find((s) => s.id === 'humanizer')
+    expect(skill).toBeDefined()
+    expect(skill!.name).toBe('humanizer-zh')
+    expect(skill!.description).toContain('去除文本中的 AI 生成痕迹')
+    expect(skill!.whenToUse).toBe('编辑或审阅文本时')
+    // Body is used as promptTemplate (not just ## Prompt section)
+    expect(skill!.promptTemplate).toContain('你是一位文字编辑')
+    expect(skill!.promptTemplate).toContain('删除填充短语')
+  })
+
+  it('should prefer SKILL.md over skill.md when both exist', () => {
+    const skillDir = join(TEST_SKILLS_DIR, 'dual')
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: Universal\n---\n# Universal Skill', 'utf-8')
+    writeFileSync(join(skillDir, 'skill.md'), '# Legacy Skill\n\n## Prompt\n\nLegacy prompt', 'utf-8')
+
+    const skills = loadSkills(TEST_WS)
+    const skill = skills.find((s) => s.id === 'dual')
+    expect(skill).toBeDefined()
+    expect(skill!.name).toBe('Universal')
   })
 })
 

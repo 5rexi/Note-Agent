@@ -408,7 +408,7 @@ export default function FloatingPanel() {
               <div className="text-[12px] text-center py-4" style={{ color: 'var(--na-text-tertiary)' }}>
                 暂无自定义技能
                 <div className="text-[10px] mt-1" style={{ color: 'var(--na-text-tertiary)' }}>
-                  在 ~/.note_agent/skills/ 或项目 .note_agent/skills/ 下创建 skill.md
+                  在 .note_agent/skills/ 目录下创建 SKILL.md 文件
                 </div>
               </div>
             )}

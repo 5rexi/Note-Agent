@@ -792,6 +792,11 @@ export function registerAgentBridge() {
 
   // Clear session state
   ipcMain.handle('agent:clearSession', async (_event, sessionId: string) => {
+    const state = sessions.get(sessionId)
+    if (state) {
+      state.running = false
+      state.engine.abort()
+    }
     clearSessionState(sessionId)
     return { success: true }
   })

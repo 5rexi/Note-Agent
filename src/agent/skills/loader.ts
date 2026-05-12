@@ -1,5 +1,10 @@
 /**
- * Skill 加载器 — 扫描 ~/.note_agent/skills/ 和项目级 .note_agent/skills/
+ * Skill 加载器 — 兼容 Claude Code / Cline / npx skills 通用格式
+ *
+ * 扫描路径：
+ *   <workspace>/.note_agent/skills/  (项目级)
+ *
+ * 支持文件名：SKILL.md (通用) 优先于 skill.md (遗留)
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
@@ -7,119 +12,189 @@ import { join, resolve } from 'path'
 import { homedir } from 'os'
 import type { Skill } from './types'
 
-const USER_SKILLS_DIR = join(homedir(), '.note_agent', 'skills')
-
 function getProjectSkillsDir(workspacePath: string): string {
   return join(resolve(workspacePath), '.note_agent', 'skills')
 }
 
+/* ── Frontmatter parser ── */
+
+interface ParsedFrontmatter {
+  name?: string
+  description?: string
+  whenToUse?: string
+  alwaysInject?: boolean
+  body: string
+}
+
 /**
- * 解析 skill.md 文件
- * 格式：
- *   # Skill Name
- *   Description line...
- *   ## Prompt
- *   prompt template...
- *   ## Examples
- *   example 1...
+ * Parse YAML-ish frontmatter from SKILL.md.
+ * Supports simple key: value, multiline |/>, and nested metadata.trigger.
  */
+function parseFrontmatter(content: string): ParsedFrontmatter {
+  const result: ParsedFrontmatter = { body: content }
+
+  if (!content.trimStart().startsWith('---')) return result
+
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?/)
+  if (!match) return result
+
+  const fmText = match[1]
+  result.body = content.slice(match[0].length)
+
+  const lines = fmText.split('\n')
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trimEnd()
+    const colonIdx = line.indexOf(':')
+    if (colonIdx <= 0) { i++; continue }
+
+    const key = line.slice(0, colonIdx).trim()
+    let value = line.slice(colonIdx + 1).trim()
+
+    // Multiline with | or > or empty first line
+    if (value === '|' || value === '>' || value === '') {
+      i++
+      const parts: string[] = []
+      while (i < lines.length) {
+        const next = lines[i]
+        // Stop at next top-level key (not indented)
+        if (/^\w+:\s*/.test(next) && !next.startsWith(' ')) break
+        parts.push(next.trim())
+        i++
+      }
+      ;(result as any)[key] = parts.join(' ').trim()
+      continue
+    }
+
+    // Check continuation lines (indented)
+    i++
+    const parts = [value]
+    while (i < lines.length) {
+      const next = lines[i]
+      if (/^\w+:\s*/.test(next) && !next.startsWith(' ')) break
+      if (next.startsWith('  ') || next.startsWith('\t')) {
+        parts.push(next.trim())
+      }
+      i++
+    }
+    ;(result as any)[key] = parts.join(' ').trim()
+  }
+
+  // metadata.trigger
+  const triggerMatch = fmText.match(/metadata:[\s\S]*?trigger:\s*(.+)/)
+  if (triggerMatch) result.whenToUse = triggerMatch[1].trim()
+
+  result.alwaysInject = fmText.includes('alwaysInject: true')
+  return result
+}
+
+/* ── Skill parser ── */
+
 function parseSkillMd(content: string, id: string, sourcePath: string): Skill {
-  const lines = content.split('\n')
-  let name = id
-  let description = ''
-  let promptTemplate = ''
-  let alwaysInject = false
-  let whenToUse = ''
+  const { name, description, whenToUse, alwaysInject, body } = parseFrontmatter(content)
+
+  // Universal format (Claude Code / Cline / npx skills) has name/description in frontmatter
+  const isUniversal = !!name || !!description
+
+  let finalName = name || id
+  let finalDescription = description || ''
+  let promptTemplate = body.trim()
+
   const examples: string[] = []
 
-  let section: 'none' | 'desc' | 'prompt' | 'examples' | 'when' = 'none'
-  let inFrontmatter = false
+  if (!isUniversal) {
+    // Legacy Note Agent format: parse sections manually
+    const lines = body.split('\n')
+    let section: 'none' | 'desc' | 'prompt' | 'examples' | 'when' = 'none'
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const trimmed = line.trim()
+    for (const line of lines) {
+      const trimmed = line.trim()
 
-    // Frontmatter: --- ... ---
-    if (trimmed === '---' && i === 0) {
-      inFrontmatter = true
-      continue
-    }
-    if (inFrontmatter) {
-      if (trimmed === '---') {
-        inFrontmatter = false
+      if (trimmed.startsWith('# ') && !trimmed.startsWith('## ')) {
+        finalName = trimmed.slice(2).trim()
+        section = 'desc'
         continue
       }
-      if (trimmed.startsWith('alwaysInject:')) {
-        alwaysInject = trimmed.includes('true')
+
+      if (trimmed === '## Prompt' || trimmed === '## prompt') {
+        section = 'prompt'
+        continue
       }
-      if (trimmed.startsWith('whenToUse:')) {
-        whenToUse = trimmed.slice('whenToUse:'.length).trim()
+
+      if (trimmed === '## Examples' || trimmed === '## examples') {
+        section = 'examples'
+        continue
       }
-      continue
+
+      if (trimmed === '## When to Use' || trimmed === '## when to use') {
+        section = 'when'
+        continue
+      }
+
+      if (section === 'desc') {
+        finalDescription += line + '\n'
+      } else if (section === 'prompt') {
+        promptTemplate += line + '\n'
+      } else if (section === 'examples') {
+        if (trimmed) examples.push(trimmed)
+      } else if (section === 'when') {
+        // whenToUse in legacy frontmatter overrides body section
+      }
     }
 
-    if (trimmed.startsWith('# ') && !trimmed.startsWith('## ')) {
-      name = trimmed.slice(2).trim()
-      section = 'desc'
-      continue
-    }
+    finalDescription = finalDescription.trim()
+    promptTemplate = promptTemplate.trim()
+  }
 
-    if (trimmed === '## Prompt' || trimmed === '## prompt') {
-      section = 'prompt'
-      continue
-    }
-
-    if (trimmed === '## Examples' || trimmed === '## examples') {
-      section = 'examples'
-      continue
-    }
-
-    if (trimmed === '## When to Use' || trimmed === '## when to use') {
-      section = 'when'
-      continue
-    }
-
-    if (section === 'desc') {
-      description += line + '\n'
-    } else if (section === 'prompt') {
-      promptTemplate += line + '\n'
-    } else if (section === 'examples') {
-      if (trimmed) examples.push(trimmed)
-    } else if (section === 'when') {
-      whenToUse += line + '\n'
+  // Extract ## Examples from universal format body too
+  if (isUniversal) {
+    const exMatch = body.match(/^##\s+[Ee]xamples\s*\n([\s\S]*?)(?=^##\s+|\z)/m)
+    if (exMatch) {
+      exMatch[1].split('\n').forEach((line) => {
+        const t = line.trim()
+        if (t) examples.push(t)
+      })
     }
   }
 
   return {
     id,
-    name,
-    description: description.trim(),
-    promptTemplate: promptTemplate.trim(),
+    name: finalName || id,
+    description: finalDescription,
+    promptTemplate,
     examples: examples.length > 0 ? examples : undefined,
     sourcePath,
-    alwaysInject,
-    whenToUse: whenToUse.trim() || undefined,
+    alwaysInject: alwaysInject ?? false,
+    whenToUse: whenToUse || undefined,
   }
 }
 
-/**
- * 从单个目录加载 skill
- */
+/* ── Directory scanning ── */
+
 function loadSkillFromDir(dirPath: string, id: string): Skill | undefined {
-  const skillMdPath = join(dirPath, 'skill.md')
-  if (!existsSync(skillMdPath)) return undefined
+  const skillMdUpper = join(dirPath, 'SKILL.md')
+  const skillMdLower = join(dirPath, 'skill.md')
+
+  let content = ''
+  let sourcePath = ''
+
+  if (existsSync(skillMdUpper)) {
+    content = readFileSync(skillMdUpper, 'utf-8')
+    sourcePath = skillMdUpper
+  } else if (existsSync(skillMdLower)) {
+    content = readFileSync(skillMdLower, 'utf-8')
+    sourcePath = skillMdLower
+  } else {
+    return undefined
+  }
 
   try {
-    const content = readFileSync(skillMdPath, 'utf-8')
-    return parseSkillMd(content, id, dirPath)
+    return parseSkillMd(content, id, sourcePath)
   } catch {
     return undefined
   }
 }
 
-/**
- * 扫描 skills 目录，返回所有 skill
- */
 function scanSkillsDir(dirPath: string): Skill[] {
   if (!existsSync(dirPath)) return []
 
@@ -139,19 +214,14 @@ function scanSkillsDir(dirPath: string): Skill[] {
   return skills
 }
 
+/* ── Public API ── */
+
 /**
- * 加载所有可用 skills（用户级 + 项目级）
- * 项目级覆盖用户级同名 skill
+ * 加载所有可用 skills（用户级多目录 + 项目级）
+ * 后加载的覆盖先加载的同名 skill
  */
 export function loadSkills(workspacePath: string): Skill[] {
-  const userSkills = scanSkillsDir(USER_SKILLS_DIR)
-  const projectSkills = scanSkillsDir(getProjectSkillsDir(workspacePath))
-
-  const map = new Map<string, Skill>()
-  for (const s of userSkills) map.set(s.id, s)
-  for (const s of projectSkills) map.set(s.id, s) // Override
-
-  return Array.from(map.values())
+  return scanSkillsDir(getProjectSkillsDir(workspacePath))
 }
 
 /**
@@ -168,7 +238,6 @@ export function getSkillList(workspacePath: string): Array<{ id: string; name: s
 
 /**
  * 将 skills 格式化为 system prompt 可用的字符串
- * alwaysInject skills 的完整内容也会被包含
  */
 export function formatSkillsContext(skills: Skill[]): string | undefined {
   if (skills.length === 0) return undefined
@@ -202,7 +271,6 @@ export function formatSkillsContext(skills: Skill[]): string | undefined {
 export function getSkillPrompt(skill: Skill, context?: Record<string, string>): string {
   let prompt = skill.promptTemplate
 
-  // Simple template substitution: {{key}} → value
   if (context) {
     for (const [key, val] of Object.entries(context)) {
       prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val)

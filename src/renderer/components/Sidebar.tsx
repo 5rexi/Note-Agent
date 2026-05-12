@@ -146,15 +146,14 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
     loadKbFolders()
   }, [])
 
-  // Load folders when workspace changes
+  // Load all folders across workspaces
   useEffect(() => {
     async function loadFolders() {
-      if (!currentWorkspaceId) return
-      const folders = await window.electronAPI.getTaskFolders(currentWorkspaceId)
+      const folders = await window.electronAPI.getTaskFolders()
       setTaskFolders(folders)
     }
     loadFolders()
-  }, [currentWorkspaceId])
+  }, [])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -324,13 +323,14 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
   }
 
   const selectTask = (task: Task) => { setCurrentTaskId(task.id); if (task.workspace_id) setCurrentWorkspaceId(task.workspace_id); setContextMenu(null) }
+  const getWorkspaceName = (id: string) => workspaces.find((w) => w.id === id)?.name || ''
 
   const toggleGroup = (key: string) => setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }))
   const toggleFolder = (folderId: string) => setExpandedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }))
 
-  // Tasks grouped by status (only tasks without folder_id)
-  const tasksByStatus = (status: Task['status']) => tasks.filter((t) => t.status === status && !t.folder_id && (!currentWorkspaceId || t.workspace_id === currentWorkspaceId))
-  // Tasks in custom folders
+  // Tasks grouped by status (all workspaces, only tasks without folder_id)
+  const tasksByStatus = (status: Task['status']) => tasks.filter((t) => t.status === status && !t.folder_id)
+  // Tasks in custom folders (all workspaces)
   const tasksInFolder = (folderId: string) => tasks.filter((t) => t.folder_id === folderId)
 
   const NavSection = ({ title, children }: { title: string; children: React.ReactNode }) => (
@@ -498,6 +498,11 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
                                 }}>
                                   {task.title}
                                 </span>
+                                {task.workspace_id && task.workspace_id !== currentWorkspaceId && (
+                                  <span className="text-[10px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--na-bg-active)', color: 'var(--na-text-tertiary)' }}>
+                                    {getWorkspaceName(task.workspace_id)}
+                                  </span>
+                                )}
                                 {streamingTaskIds.has(task.id) && (
                                   <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin ml-auto" style={{ color: 'var(--na-status-explore)' }} />
                                 )}
@@ -543,6 +548,11 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
                             />
                           ) : (
                             <span className="flex-1 text-[13px] font-medium truncate" style={{ color: 'var(--na-text-primary)' }}>{folder.name}</span>
+                          )}
+                          {folder.workspace_id && folder.workspace_id !== currentWorkspaceId && (
+                            <span className="text-[10px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--na-bg-active)', color: 'var(--na-text-tertiary)' }}>
+                              {getWorkspaceName(folder.workspace_id)}
+                            </span>
                           )}
                           <span className="text-[11px] px-1.5 py-0.5 rounded-md shrink-0" style={{ background: 'var(--na-bg-active)', color: 'var(--na-text-tertiary)' }}>
                             {folderTasks.length}
@@ -610,6 +620,11 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
                                     }}>
                                       {task.title}
                                     </span>
+                                    {task.workspace_id && task.workspace_id !== currentWorkspaceId && (
+                                      <span className="text-[10px] px-1 py-0.5 rounded shrink-0" style={{ background: 'var(--na-bg-active)', color: 'var(--na-text-tertiary)' }}>
+                                        {getWorkspaceName(task.workspace_id)}
+                                      </span>
+                                    )}
                                     {streamingTaskIds.has(task.id) && (
                                       <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin ml-auto" style={{ color: 'var(--na-status-explore)' }} />
                                     )}
@@ -927,7 +942,7 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
                 onClick={() => {
                   const ws = workspaces.find((w) => w.id === contextMenu!.id)
                   if (ws) {
-                    window.dispatchEvent(new CustomEvent('file-tree:open-absolute', { detail: `${ws.path}/.note_agent/NOTEAGENT.md` }))
+                    window.dispatchEvent(new CustomEvent('file-tree:open-absolute', { detail: window.electronAPI.pathJoin(ws.path, '.note_agent', 'NOTEAGENT.md') }))
                   }
                   setContextMenu(null)
                 }}

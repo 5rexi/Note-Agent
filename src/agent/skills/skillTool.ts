@@ -18,7 +18,7 @@ type Input = z.infer<typeof inputSchema>
 
 export const SkillTool: Tool<Input, string> = {
   name: 'skill',
-  description: 'Invoke a loaded skill by its ID. Returns the skill\'s prompt template with optional variable substitution. Use this when you need to apply a specific skill\'s expertise or workflow.',
+  description: 'Invoke a loaded skill by its ID. Skills are loaded ONLY from the workspace `.note_agent/skills/` directory. If a skill is not found, it means it was NOT installed to the correct location. Use this when you need to apply a specific skill\'s expertise or workflow.',
   inputSchema,
 
   isReadOnly() { return true },

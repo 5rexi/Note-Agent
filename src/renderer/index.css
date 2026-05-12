@@ -299,3 +299,12 @@ body {
   background-color: rgba(217, 119, 6, 0.15) !important;
   border-left: 3px solid var(--na-status-execute);
 }
+
+/* Hide scrollbar for tab overflow */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

@@ -84,10 +84,16 @@ export default function FileEditor() {
   const workspaceRef = useRef(workspace)
   const isProgrammaticChange = useRef(false)
   const loadAbortRef = useRef<AbortController | null>(null)
+  const activeTabRef = useRef<HTMLButtonElement | null>(null)
 
   // Keep refs in sync to avoid stale closures in Monaco actions
   useEffect(() => { currentFileRef.current = currentFile }, [currentFile])
   useEffect(() => { workspaceRef.current = workspace }, [workspace])
+
+  // Scroll active tab into view when it changes
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+  }, [editorState.activeFileIndex])
   const [latexEnabled, setLatexEnabled] = useState(false)
   const wordUnpackMap = useRef<Map<string, string>>(new Map()) // unpackDir -> original docx path
 
@@ -791,7 +797,7 @@ export default function FileEditor() {
           background: 'var(--na-bg-sidebar)',
         }}
       >
-        <div className="flex items-center gap-1 overflow-hidden flex-1">
+        <div className="flex items-center gap-1 overflow-x-auto flex-1 scrollbar-hide scroll-smooth">
           {editorState.openFiles.length === 0 ? (
             <span className="text-[11px] px-2" style={{ color: 'var(--na-text-tertiary)' }}>
               无打开文件
@@ -803,6 +809,7 @@ export default function FileEditor() {
               return (
                 <button
                   key={path}
+                  ref={isActive ? activeTabRef : undefined}
                   onClick={() => setEditorState((s) => ({ ...s, activeFileIndex: idx }))}
                   className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-all shrink-0 max-w-[160px]"
                   style={{

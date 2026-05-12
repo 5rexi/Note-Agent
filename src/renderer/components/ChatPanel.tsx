@@ -495,7 +495,7 @@ export default function ChatPanel({
     const loadMCPs = async () => {
       const homeResult = await window.electronAPI.getHomeDir?.()
       const homeDir = homeResult || ''
-      const result = await window.electronAPI.readFile(`${homeDir}/.note_agent/mcp.json`)
+      const result = await window.electronAPI.readFile(window.electronAPI.pathJoin(homeDir, '.note_agent', 'mcp.json'))
       if (result.error) { setMcpServers([]); return }
       try {
         const config = JSON.parse(result.content)
@@ -541,8 +541,10 @@ export default function ChatPanel({
   const taskRef = useRef(task)
   const activeSessionIdRef = useRef<string | null>(null)
   const sessionToTaskRef = useRef<Map<string, string>>(new Map())
+  const sessionStreamingStatesRef = useRef(sessionStreamingStates)
   useEffect(() => { sessionRef.current = session }, [session])
   useEffect(() => { taskRef.current = task }, [task])
+  useEffect(() => { sessionStreamingStatesRef.current = sessionStreamingStates }, [sessionStreamingStates])
 
   // ── Session switch: restore mode/tier/model from session, reset input ──
   useEffect(() => {
@@ -1161,6 +1163,8 @@ export default function ChatPanel({
   // Updates per-session streaming state atom so background sessions keep streaming.
   useEffect(() => {
     const handleEvent = (eventSessionId: string, event: AgentEvent) => {
+      // If this session was cleared, ignore ALL stale events including done/error
+      if (!sessionStreamingStatesRef.current[eventSessionId]) return
       switch (event.type) {
         case 'text':
           setSessionStreamingStates((prev) => {
@@ -1537,28 +1541,6 @@ export default function ChatPanel({
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={async () => {
-              if (!session?.id) return
-              if (!confirm(t('confirmClearSession'))) return
-              try {
-                await window.electronAPI.agentClearSession(session.id)
-                await window.electronAPI.clearSessionMessages(session.id)
-                setMessages([])
-                setQuestionQueue([])
-                setQuestionAnswers([])
-                setCurrentQIndex(0)
-                toast.success(t('sessionCleared'))
-              } catch (e: any) {
-                toast.error(t('clearFailed') + ': ' + e.message)
-              }
-            }}
-            className="p-2 rounded-lg transition-colors hover:bg-[var(--na-bg-hover)]"
-            style={{ color: 'var(--na-text-tertiary)' }}
-            title={t('clearChat')}
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
           <button
             onClick={onToggle}
             className="p-2 rounded-lg transition-colors hover:bg-[var(--na-bg-hover)]"

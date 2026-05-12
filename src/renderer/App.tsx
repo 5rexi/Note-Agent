@@ -42,6 +42,7 @@ export default function App() {
   const sidebarRef = useRef<PanelImperativeHandle>(null)
   const chatRef = useRef<PanelImperativeHandle>(null)
   const sidebarWrapperRef = useRef<HTMLDivElement>(null)
+  const prevWorkspaceIdRef = useRef<string | null>(null)
 
   // Theme + appearance config
   useEffect(() => {
@@ -182,6 +183,53 @@ export default function App() {
     saveAppSettings()
   }, [saveAppSettings])
 
+  // Persist / restore workspace editor state on workspace switch
+  useEffect(() => {
+    async function handleWorkspaceSwitch() {
+      const oldId = prevWorkspaceIdRef.current
+      const newId = currentWorkspaceId
+      if (oldId && oldId !== newId) {
+        await window.electronAPI.updateWorkspace(oldId, {
+          editor_state: JSON.stringify({
+            currentTaskId,
+            openFiles: editorState.openFiles,
+            activeFileIndex: editorState.activeFileIndex,
+            editorView: editorState.editorView,
+            sidebarMode: editorState.sidebarMode,
+          }),
+        })
+      }
+      if (newId && oldId !== newId) {
+        const ws = workspaces.find((w) => w.id === newId)
+        if (ws?.editor_state) {
+          try {
+            const saved = JSON.parse(ws.editor_state)
+            setEditorState((s) => ({
+              ...s,
+              openFiles: saved.openFiles || [],
+              activeFileIndex: saved.activeFileIndex ?? 0,
+              editorView: saved.editorView ?? s.editorView,
+              sidebarMode: saved.sidebarMode ?? s.sidebarMode,
+            }))
+            // Only restore saved task if current task does not belong to the new workspace
+            // (prevents overriding a task the user just clicked in the sidebar)
+            const currentTask = tasks.find((t) => t.id === currentTaskId)
+            if (!currentTask || currentTask.workspace_id !== newId) {
+              setCurrentTaskId(saved.currentTaskId ?? null)
+            }
+          } catch {
+            setCurrentTaskId(null)
+          }
+        } else {
+          setEditorState((s) => ({ ...s, openFiles: [], activeFileIndex: 0 }))
+          setCurrentTaskId(null)
+        }
+      }
+      prevWorkspaceIdRef.current = newId
+    }
+    handleWorkspaceSwitch()
+  }, [currentWorkspaceId])
+
   // Load session + messages when task changes
   useEffect(() => {
     async function loadSession() {
@@ -223,10 +271,29 @@ export default function App() {
         if (task?.workspace_id) {
           setCurrentWorkspaceId(task.workspace_id)
         }
+        // Restore task-level fileStates and lastActiveFile (merge into current openFiles, never close existing)
         if (task?.editor_state) {
           try {
             const state = JSON.parse(task.editor_state)
-            setEditorState((s) => ({ ...s, ...state }))
+            setEditorState((s) => {
+              const newOpenFiles = [...s.openFiles]
+              let newActiveIndex = s.activeFileIndex
+              // Merge task's last active file into openFiles
+              const lastActiveFile = state.lastActiveFile || (state.openFiles?.[state.activeFileIndex])
+              if (lastActiveFile && !newOpenFiles.includes(lastActiveFile)) {
+                newOpenFiles.push(lastActiveFile)
+              }
+              if (lastActiveFile) {
+                const idx = newOpenFiles.indexOf(lastActiveFile)
+                if (idx !== -1) newActiveIndex = idx
+              }
+              return {
+                ...s,
+                openFiles: newOpenFiles,
+                activeFileIndex: newActiveIndex,
+                fileStates: { ...s.fileStates, ...state.fileStates },
+              }
+            })
           } catch {}
         }
       } catch (e: any) {
@@ -238,14 +305,28 @@ export default function App() {
 
   // Auto save editor state
   useEffect(() => {
-    if (!currentTaskId) return
+    if (!currentTaskId || !currentWorkspaceId) return
     const timer = setTimeout(async () => {
       try {
-        await window.electronAPI.updateTask(currentTaskId, undefined, JSON.stringify(editorState))
+        // Task-level: cursor/scroll positions and last active file
+        await window.electronAPI.updateTask(currentTaskId, undefined, JSON.stringify({
+          fileStates: editorState.fileStates,
+          lastActiveFile: editorState.openFiles[editorState.activeFileIndex] || null,
+        }))
+        // Workspace-level: open files list, current task, and view settings
+        await window.electronAPI.updateWorkspace(currentWorkspaceId, {
+          editor_state: JSON.stringify({
+            currentTaskId,
+            openFiles: editorState.openFiles,
+            activeFileIndex: editorState.activeFileIndex,
+            editorView: editorState.editorView,
+            sidebarMode: editorState.sidebarMode,
+          }),
+        })
       } catch {}
     }, 500)
     return () => clearTimeout(timer)
-  }, [editorState, currentTaskId])
+  }, [editorState, currentTaskId, currentWorkspaceId])
 
   const handleSidebarResize = (size: PanelSize) => {
     setSidebarCollapsed(size.asPercentage < 0.5)
