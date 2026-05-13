@@ -8,7 +8,7 @@ import './index.css'
 // Import Monaco editor core API only (not the full bundle)
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 
-// Import only the language tokenizers we need (keeps bundle size small)
+// Import language tokenizers (syntax highlighting)
 import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution'
 import 'monaco-editor/esm/vs/basic-languages/python/python.contribution'
 import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution'
@@ -34,6 +34,38 @@ import 'monaco-editor/esm/vs/basic-languages/lua/lua.contribution'
 import 'monaco-editor/esm/vs/basic-languages/r/r.contribution'
 import 'monaco-editor/esm/vs/basic-languages/scala/scala.contribution'
 import 'monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution'
+
+// Import language services (diagnostics, intellisense)
+import 'monaco-editor/esm/vs/language/typescript/monaco.contribution'
+import 'monaco-editor/esm/vs/language/json/monaco.contribution'
+import 'monaco-editor/esm/vs/language/css/monaco.contribution'
+import 'monaco-editor/esm/vs/language/html/monaco.contribution'
+
+// Vite worker imports — ?worker suffix tells Vite to bundle as web worker
+import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
+import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
+import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
+import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
+import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+
+// Configure worker loading for language services
+self.MonacoEnvironment = {
+  getWorker: async (_, label) => {
+    if (label === 'typescript' || label === 'javascript') {
+      return new TsWorker()
+    }
+    if (label === 'json') {
+      return new JsonWorker()
+    }
+    if (label === 'css' || label === 'scss' || label === 'less') {
+      return new CssWorker()
+    }
+    if (label === 'html' || label === 'handlebars' || label === 'razor') {
+      return new HtmlWorker()
+    }
+    return new EditorWorker()
+  },
+}
 
 // Configure @monaco-editor/react to use the local Monaco instance
 loader.config({ monaco })

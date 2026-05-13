@@ -533,6 +533,20 @@ export default function ChatPanel({
   const skillMatchRef = useRef<{ start: number; end: number } | null>(null)
   const [allSkills, setAllSkills] = useState<Array<{ id: string; name: string }>>([])
 
+  // ── Popup item refs for scrollIntoView ──
+  const atItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
+  const skillItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
+
+  useEffect(() => {
+    const el = atItemRefs.current.get(atSelectedIndex)
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [atSelectedIndex])
+
+  useEffect(() => {
+    const el = skillItemRefs.current.get(skillSelectedIndex)
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [skillSelectedIndex])
+
   // ── Report directory detection ──
   const [reportDir, setReportDir] = useState<string>('')
 
@@ -2164,7 +2178,7 @@ export default function ChatPanel({
           {showAtPopup && atResults.length > 0 && textareaRef.current &&
             createPortal(
               <div
-                className="fixed z-[60] overflow-hidden"
+                className="fixed z-[60] overflow-y-auto"
                 style={{
                   left: textareaRef.current.getBoundingClientRect().left + 16,
                   bottom: window.innerHeight - textareaRef.current.getBoundingClientRect().top + 4,
@@ -2179,6 +2193,7 @@ export default function ChatPanel({
                 {atResults.map((file, idx) => (
                   <button
                     key={file}
+                    ref={(el) => { if (el) atItemRefs.current.set(idx, el); else atItemRefs.current.delete(idx) }}
                     onClick={() => insertAtMention(file)}
                     className="w-full text-left px-3 py-2 text-[12px] transition-colors flex items-center gap-2"
                     style={{
@@ -2200,7 +2215,7 @@ export default function ChatPanel({
           {showSkillPopup && skillResults.length > 0 && textareaRef.current &&
             createPortal(
               <div
-                className="fixed z-[60] overflow-hidden"
+                className="fixed z-[60] overflow-y-auto"
                 style={{
                   left: textareaRef.current.getBoundingClientRect().left + 16,
                   bottom: window.innerHeight - textareaRef.current.getBoundingClientRect().top + 4,
@@ -2215,6 +2230,7 @@ export default function ChatPanel({
                 {skillResults.map((skill, idx) => (
                   <button
                     key={skill.id}
+                    ref={(el) => { if (el) skillItemRefs.current.set(idx, el); else skillItemRefs.current.delete(idx) }}
                     onClick={() => insertSkillMention(skill)}
                     className="w-full text-left px-3 py-2 text-[12px] transition-colors flex items-center gap-2"
                     style={{
@@ -2246,8 +2262,8 @@ export default function ChatPanel({
               const cursorPos = e.target.selectionStart
               const beforeCursor = value.slice(0, cursorPos)
 
-              // Detect @ mention
-              const atMatch = beforeCursor.match(/@([\w./-]*)$/)
+              // Detect @ mention (supports CJK and other non-space chars)
+              const atMatch = beforeCursor.match(/@([^\s@]*)$/)
               if (atMatch && workspace?.path) {
                 const query = atMatch[1]
                 setAtQuery(query)
@@ -2261,8 +2277,8 @@ export default function ChatPanel({
                 return
               }
 
-              // Detect /skill command
-              const skillMatch = beforeCursor.match(/\/([\w]*)$/)
+              // Detect /skill command (supports CJK and other non-space chars)
+              const skillMatch = beforeCursor.match(/\/([^\s]*)$/)
               if (skillMatch && allSkills.length > 0) {
                 const query = skillMatch[1].toLowerCase()
                 const filtered = query

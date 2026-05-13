@@ -121,6 +121,7 @@ export default function LaTeXViewer({ filePath }: LaTeXViewerProps) {
               borderRadius: 'var(--na-radius-sm)',
               background: isCompiling ? 'transparent' : 'rgba(5,150,105,0.08)',
             }}
+            title="编译 LaTeX"
           >
             {isCompiling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
             {isCompiling ? '编译中...' : '编译'}

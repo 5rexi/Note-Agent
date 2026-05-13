@@ -54,13 +54,15 @@ function MarkdownPreview({ content }: { content: string }) {
 }
 import {
   FileCode, Eye, LayoutTemplate, Save, X, Terminal, Play, Bug, RefreshCw,
-  Loader2, Square, ChevronUp, Undo, Quote, Wrench,
+  Loader2, Square, ChevronUp, Undo, Quote, Wrench, Link, ChevronDown, Check,
 } from 'lucide-react'
 import ImageViewer from './file-viewers/ImageViewer'
 import LaTeXViewer from './file-viewers/LaTeXViewer'
 import UnsupportedViewer from './file-viewers/UnsupportedViewer'
+import TerminalPanel, { type TerminalPanelHandle } from './TerminalPanel'
 import { viewerRegistry } from './file-viewers/registry'
 import { type FileKind, type FileTypeInfo, FILE_TYPE_MAP, getFileInfo } from './file-viewers/file-types'
+import { useEditorPreviewScrollSync } from '../hooks/useScrollSync'
 
 // (FileKind, FileTypeInfo, FILE_TYPE_MAP, getFileInfo now live in ./file-viewers/file-types)
 
@@ -86,6 +88,41 @@ export default function FileEditor() {
   const isProgrammaticChange = useRef(false)
   const loadAbortRef = useRef<AbortController | null>(null)
   const activeTabRef = useRef<HTMLButtonElement | null>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [syncScrollEnabled, setSyncScrollEnabled] = useState(false)
+  const [terminalVisible, setTerminalVisible] = useState(false)
+  const [terminalPosition, setTerminalPosition] = useState<'top' | 'bottom'>('bottom')
+  const terminalPanelRef = useRef<TerminalPanelHandle>(null)
+  const pythonLspRef = useRef<{
+    workspacePath: string | null
+    lspReady: boolean
+    completionDisposable: any
+    hoverDisposable: any
+    diagnosticsUnsub: (() => void) | null
+  } | null>(null)
+  const [pythonEnvInfo, setPythonEnvInfo] = useState<{ type: string; pythonPath: string | null } | null>(null)
+  const [availablePythonEnvs, setAvailablePythonEnvs] = useState<Array<{ id: string; label: string; type: string; pythonPath: string | null }>>([])
+  const [selectedPythonEnvId, setSelectedPythonEnvId] = useState<string | null>(null)
+  const [showPythonDropdown, setShowPythonDropdown] = useState(false)
+  const pythonEnvBtnRef = useRef<HTMLButtonElement>(null)
+  const pythonDropdownRef = useRef<HTMLDivElement>(null)
+
+  // Close Python env dropdown on click outside
+  useEffect(() => {
+    if (!showPythonDropdown) return
+    function handleClick(e: MouseEvent) {
+      const target = e.target as Node
+      if (
+        pythonEnvBtnRef.current?.contains(target) ||
+        pythonDropdownRef.current?.contains(target)
+      ) {
+        return
+      }
+      setShowPythonDropdown(false)
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [showPythonDropdown])
 
   // Keep refs in sync to avoid stale closures in Monaco actions
   useEffect(() => { currentFileRef.current = currentFile }, [currentFile])
@@ -349,10 +386,33 @@ export default function FileEditor() {
         e.preventDefault()
         saveFile()
       }
+      // Terminal toggle: Cmd/Ctrl + `
+      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault()
+        setTerminalVisible((v) => !v)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [saveFile])
+
+  // Load terminal panel preferences
+  useEffect(() => {
+    window.electronAPI.getSetting('terminalPanelPosition').then((raw) => {
+      if (raw === 'top' || raw === 'bottom') setTerminalPosition(raw)
+    })
+    window.electronAPI.getSetting('terminalPanelVisible').then((raw) => {
+      if (raw === 'true') setTerminalVisible(true)
+    })
+  }, [])
+
+  // Persist terminal panel preferences
+  useEffect(() => {
+    window.electronAPI.setSetting('terminalPanelPosition', terminalPosition)
+  }, [terminalPosition])
+  useEffect(() => {
+    window.electronAPI.setSetting('terminalPanelVisible', String(terminalVisible))
+  }, [terminalVisible])
 
   const loadFileContent = useCallback(async (filePath: string) => {
     if (!workspace) return
@@ -499,6 +559,37 @@ export default function FileEditor() {
     // Apply current config
     reloadEditorConfig()
 
+    // ── Python LSP Integration ──
+    if (workspaceRef.current?.path) {
+      setupPythonLSP(monacoInstance, workspaceRef.current.path)
+    }
+
+    // Configure language service diagnostics
+    if (monacoInstance.languages.typescript) {
+      monacoInstance.languages.typescript.typescriptDefaults.setCompilerOptions({
+        target: monacoInstance.languages.typescript.ScriptTarget.ESNext,
+        module: monacoInstance.languages.typescript.ModuleKind.ESNext,
+        allowNonTsExtensions: true,
+        noEmit: true,
+        strict: true,
+        esModuleInterop: true,
+        skipLibCheck: true,
+      })
+      monacoInstance.languages.typescript.javascriptDefaults.setCompilerOptions({
+        target: monacoInstance.languages.typescript.ScriptTarget.ESNext,
+        allowNonTsExtensions: true,
+        noEmit: true,
+        strict: true,
+      })
+    }
+    if (monacoInstance.languages.json) {
+      monacoInstance.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        allowComments: true,
+        schemas: [],
+      })
+    }
+
     // Register context menu actions for text selection
     editor.addAction({
       id: 'na-quote-to-chat',
@@ -577,10 +668,233 @@ export default function FileEditor() {
 
   }
 
+  // ── Python LSP Setup ──
+  async function setupPythonLSP(monacoInstance: any, workspacePath: string) {
+    const lsp = pythonLspRef.current
+    if (lsp?.completionDisposable) return // Already registered
+
+    const completionDisposable = monacoInstance.languages.registerCompletionItemProvider('python', {
+      triggerCharacters: ['.', ':', '('],
+      provideCompletionItems: async (model: any, position: any) => {
+        const currentLsp = pythonLspRef.current
+        if (!currentLsp?.lspReady || currentLsp.workspacePath !== workspacePath) return { suggestions: [] }
+
+        try {
+          const uri = model.uri.toString()
+          const items = await window.electronAPI.pythonLspCompletion(workspacePath, uri, {
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+          })
+
+          const kindMap: Record<number, any> = {
+            1: monacoInstance.languages.CompletionItemKind.Text,
+            2: monacoInstance.languages.CompletionItemKind.Method,
+            3: monacoInstance.languages.CompletionItemKind.Function,
+            4: monacoInstance.languages.CompletionItemKind.Constructor,
+            5: monacoInstance.languages.CompletionItemKind.Field,
+            6: monacoInstance.languages.CompletionItemKind.Variable,
+            7: monacoInstance.languages.CompletionItemKind.Class,
+            8: monacoInstance.languages.CompletionItemKind.Interface,
+            9: monacoInstance.languages.CompletionItemKind.Module,
+            10: monacoInstance.languages.CompletionItemKind.Property,
+            11: monacoInstance.languages.CompletionItemKind.Unit,
+            12: monacoInstance.languages.CompletionItemKind.Value,
+            13: monacoInstance.languages.CompletionItemKind.Enum,
+            14: monacoInstance.languages.CompletionItemKind.Keyword,
+            15: monacoInstance.languages.CompletionItemKind.Snippet,
+            16: monacoInstance.languages.CompletionItemKind.Color,
+            17: monacoInstance.languages.CompletionItemKind.File,
+            18: monacoInstance.languages.CompletionItemKind.Reference,
+            19: monacoInstance.languages.CompletionItemKind.Folder,
+            20: monacoInstance.languages.CompletionItemKind.EnumMember,
+            21: monacoInstance.languages.CompletionItemKind.Constant,
+            22: monacoInstance.languages.CompletionItemKind.Struct,
+            23: monacoInstance.languages.CompletionItemKind.Event,
+            24: monacoInstance.languages.CompletionItemKind.Operator,
+            25: monacoInstance.languages.CompletionItemKind.TypeParameter,
+          }
+
+          return {
+            suggestions: items.map((item: any) => ({
+              label: item.label,
+              kind: kindMap[item.kind] || monacoInstance.languages.CompletionItemKind.Text,
+              insertText: item.insertText || item.label,
+              detail: item.detail,
+              documentation: item.documentation?.value || item.documentation,
+              sortText: item.sortText,
+              filterText: item.filterText,
+              preselect: item.preselect,
+            })),
+          }
+        } catch {
+          return { suggestions: [] }
+        }
+      },
+    })
+
+    const hoverDisposable = monacoInstance.languages.registerHoverProvider('python', {
+      provideHover: async (model: any, position: any) => {
+        const currentLsp = pythonLspRef.current
+        if (!currentLsp?.lspReady || currentLsp.workspacePath !== workspacePath) return null
+
+        try {
+          const uri = model.uri.toString()
+          const hover = await window.electronAPI.pythonLspHover(workspacePath, uri, {
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+          })
+          if (!hover) return null
+          return {
+            contents: [{ value: hover.contents }],
+          }
+        } catch {
+          return null
+        }
+      },
+    })
+
+    // Listen for diagnostics from main process
+    const diagnosticsUnsub = window.electronAPI.onPythonLspDiagnostics((lspWorkspacePath, event) => {
+      if (lspWorkspacePath !== workspacePath) return
+      const model = monacoInstance.editor.getModels().find((m: any) => m.uri.toString() === event.uri)
+      if (model) {
+        monacoInstance.editor.setModelMarkers(model, 'python', event.diagnostics.map((d: any) => ({
+          startLineNumber: d.range.start.line + 1,
+          startColumn: d.range.start.character + 1,
+          endLineNumber: d.range.end.line + 1,
+          endColumn: d.range.end.character + 1,
+          message: d.message,
+          severity: d.severity === 1 ? monacoInstance.editor.MarkerSeverity.Error
+            : d.severity === 2 ? monacoInstance.editor.MarkerSeverity.Warning
+            : d.severity === 3 ? monacoInstance.editor.MarkerSeverity.Info
+            : monacoInstance.editor.MarkerSeverity.Hint,
+          source: d.source,
+          code: d.code,
+        })))
+      }
+    })
+
+    pythonLspRef.current = {
+      workspacePath: null,
+      lspReady: false,
+      completionDisposable,
+      hoverDisposable,
+      diagnosticsUnsub,
+    }
+  }
+
+  // Detect Python environment for status bar
+  useEffect(() => {
+    if (!workspace?.path) {
+      setPythonEnvInfo(null)
+      setAvailablePythonEnvs([])
+      setSelectedPythonEnvId(null)
+      return
+    }
+
+    async function loadEnvs() {
+      if (!workspace?.path) return
+      // Load saved selection
+      const savedKey = `pythonEnv:${workspace.path}`
+      const savedId = await window.electronAPI.getSetting(savedKey)
+
+      // Load available envs and current selection
+      const envs = await window.electronAPI.pythonEnvListAvailable(workspace.path)
+      setAvailablePythonEnvs(envs)
+
+      const selected = await window.electronAPI.pythonEnvGetSelected(workspace.path, savedId || null)
+      if (selected) {
+        setSelectedPythonEnvId(selected.id)
+        setPythonEnvInfo({ type: selected.type, pythonPath: selected.pythonPath })
+      } else {
+        setSelectedPythonEnvId(null)
+        setPythonEnvInfo(null)
+      }
+    }
+
+    loadEnvs()
+  }, [workspace?.path])
+
+  // Persist Python env selection
+  const handleSelectPythonEnv = async (envId: string) => {
+    if (!workspace?.path) return
+    setSelectedPythonEnvId(envId)
+    const selected = availablePythonEnvs.find(e => e.id === envId)
+    if (selected) {
+      setPythonEnvInfo({ type: selected.type, pythonPath: selected.pythonPath })
+    }
+    await window.electronAPI.setSetting(`pythonEnv:${workspace.path}`, envId)
+  }
+
+  // Open Python document in LSP when file changes
+  useEffect(() => {
+    if (!currentFile || !workspace?.path) return
+    const fi = getFileInfo(currentFile)
+    if (fi.lang !== 'python') return
+
+    const fullPath = window.electronAPI.pathIsAbsolute(currentFile)
+      ? currentFile
+      : window.electronAPI.pathJoin(workspace.path, currentFile)
+    const uri = `file://${fullPath}`
+
+    async function openDoc() {
+      const lsp = pythonLspRef.current
+      if (!lsp) return
+
+      // Start LSP for this workspace if needed
+      if (lsp.workspacePath !== workspace!.path || !lsp.lspReady) {
+        lsp.lspReady = false
+        lsp.workspacePath = workspace!.path
+        const started = await window.electronAPI.pythonLspStart(workspace!.path)
+        if (!started) {
+          console.warn('[Editor] Failed to start Python LSP for workspace:', workspace!.path)
+          return
+        }
+        lsp.lspReady = true
+      }
+
+      // Open document with current editor content
+      const currentContent = editorRef.current?.getValue() || content
+      await window.electronAPI.pythonLspOpen(workspace!.path, uri, currentContent).catch(() => {})
+    }
+
+    openDoc()
+  }, [currentFile, workspace?.path])
+
+  // Cleanup Python LSP when workspace changes or component unmounts
+  useEffect(() => {
+    const currentWorkspace = workspace?.path
+    return () => {
+      const lsp = pythonLspRef.current
+      if (lsp && lsp.workspacePath && lsp.workspacePath !== currentWorkspace) {
+        window.electronAPI.pythonLspStop(lsp.workspacePath).catch(() => {})
+        lsp.lspReady = false
+        lsp.workspacePath = null
+      }
+    }
+  }, [workspace?.path])
+
+  // Markdown 双窗格滚动同步
+  useEditorPreviewScrollSync(editorRef.current, previewRef, view === 'split' && syncScrollEnabled && isMarkdown)
+
   const handleEditorChange = (value: string | undefined) => {
     if (isProgrammaticChange.current) return
     setContent(value || '')
     setIsDirty(true)
+
+    // Notify Python LSP of document changes
+    const ws = workspaceRef.current
+    const lsp = pythonLspRef.current
+    if (ws?.path && lsp?.lspReady && currentFileRef.current) {
+      const fileInfo = getFileInfo(currentFileRef.current)
+      if (fileInfo.lang === 'python') {
+        const fullPath = window.electronAPI.pathIsAbsolute(currentFileRef.current)
+          ? currentFileRef.current
+          : window.electronAPI.pathJoin(ws.path, currentFileRef.current)
+        const uri = monacoRef.current?.Uri.file(fullPath).toString() || `file://${fullPath}`
+        window.electronAPI.pythonLspChange(ws.path, uri, value || '').catch(() => {})
+      }
+    }
   }
 
   const syncFontSizeToSettings = async (size: number) => {
@@ -621,6 +935,40 @@ export default function FileEditor() {
           {viewLabels[view]}
         </button>
       )
+
+      // 同步滚动开关（仅在 split 模式显示）
+      if (view === 'split') {
+        tools.push(
+          <button
+            key="sync-scroll"
+            onClick={() => {
+              setSyncScrollEnabled((prev) => {
+                const next = !prev
+                if (next && editorRef.current && previewRef.current) {
+                  // 打开时：右侧立即同步到左侧当前位置
+                  const ed = editorRef.current
+                  const preview = previewRef.current
+                  const maxEditor = Math.max(1, ed.getScrollHeight() - ed.getLayoutInfo().height)
+                  const ratio = ed.getScrollTop() / maxEditor
+                  const maxPreview = Math.max(1, preview.scrollHeight - preview.clientHeight)
+                  preview.scrollTop = ratio * maxPreview
+                }
+                return next
+              })
+            }}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] rounded transition-colors"
+            style={{
+              color: syncScrollEnabled ? 'var(--na-accent)' : 'var(--na-text-tertiary)',
+              borderRadius: 'var(--na-radius-sm)',
+              background: syncScrollEnabled ? 'var(--na-accent-soft)' : 'transparent',
+            }}
+            title={syncScrollEnabled ? '关闭同步滚动' : '开启同步滚动'}
+          >
+            <Link className="w-3 h-3" />
+            同步
+          </button>
+        )
+      }
     }
 
     if (isLatex) {
@@ -646,9 +994,31 @@ export default function FileEditor() {
     }
 
     if (['py', 'js', 'ts', 'jsx', 'tsx', 'rs', 'go'].includes(fileInfo.ext)) {
+      const isPy = fileInfo.ext === 'py'
       tools.push(
         <button
           key="run"
+          onClick={() => {
+            setTerminalVisible(true)
+            const filePath = currentFileRef.current
+            if (!filePath) return
+            let cmd = ''
+            if (isPy) {
+              const python = pythonEnvInfo?.pythonPath || 'python'
+              cmd = `"${python}" "${filePath}"`
+            } else if (['js', 'ts'].includes(fileInfo.ext)) {
+              cmd = fileInfo.ext === 'ts' ? `npx ts-node "${filePath}"` : `node "${filePath}"`
+            } else if (fileInfo.ext === 'rs') {
+              cmd = `cargo run`
+            } else if (fileInfo.ext === 'go') {
+              cmd = `go run "${filePath}"`
+            }
+            if (cmd) {
+              setTimeout(() => {
+                terminalPanelRef.current?.runCommand(cmd)
+              }, 300)
+            }
+          }}
           className="flex items-center gap-1 px-2 py-1 text-[11px] rounded transition-colors"
           style={{ color: 'var(--na-status-ask)', borderRadius: 'var(--na-radius-sm)', background: 'rgba(5,150,105,0.08)' }}
           title="运行"
@@ -657,7 +1027,7 @@ export default function FileEditor() {
           运行
         </button>
       )
-      if (fileInfo.ext === 'py') {
+      if (isPy) {
         tools.push(
           <button
             key="debug"
@@ -729,6 +1099,25 @@ export default function FileEditor() {
                 renderLineHighlight: 'all',
                 padding: { top: 16 },
                 unicodeHighlight: { invisibleCharacters: false, ambiguousCharacters: false },
+                // JetBrains-like behavior: Enter does NOT accept autocomplete suggestions
+                acceptSuggestionOnEnter: 'off',
+                // Enhanced IDE features
+                bracketPairColorization: { enabled: true },
+                guides: { bracketPairs: true, indentation: true },
+                stickyScroll: { enabled: true },
+                formatOnPaste: true,
+                formatOnType: true,
+                quickSuggestions: true,
+                suggestOnTriggerCharacters: true,
+                wordBasedSuggestions: 'allDocuments',
+                parameterHints: { enabled: true },
+                inlayHints: { enabled: 'on' },
+                suggest: {
+                  showKeywords: true,
+                  showSnippets: true,
+                  showFunctions: true,
+                  showVariables: true,
+                },
               }}
               onChange={handleEditorChange}
               onMount={handleEditorMount}
@@ -738,6 +1127,7 @@ export default function FileEditor() {
           {/* Preview panel (markdown / latex) */}
           {showPreview && (
             <div
+              ref={previewRef}
               className="overflow-auto"
               style={{
                 flex: view === 'split' ? '0 0 45%' : 1,
@@ -917,8 +1307,30 @@ export default function FileEditor() {
       </div>
 
       {/* Content area */}
-      <div className="flex-1 overflow-hidden">
-        {renderContent()}
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {terminalVisible && terminalPosition === 'top' && (
+          <TerminalPanel
+            ref={terminalPanelRef}
+            visible={terminalVisible}
+            onClose={() => setTerminalVisible(false)}
+            position={terminalPosition}
+            onTogglePosition={() => setTerminalPosition((p) => (p === 'bottom' ? 'top' : 'bottom'))}
+            workspacePath={workspace?.path}
+          />
+        )}
+        <div className="flex-1 overflow-hidden">
+          {renderContent()}
+        </div>
+        {terminalVisible && terminalPosition === 'bottom' && (
+          <TerminalPanel
+            ref={terminalPanelRef}
+            visible={terminalVisible}
+            onClose={() => setTerminalVisible(false)}
+            position={terminalPosition}
+            onTogglePosition={() => setTerminalPosition((p) => (p === 'bottom' ? 'top' : 'bottom'))}
+            workspacePath={workspace?.path}
+          />
+        )}
       </div>
 
       {/* Status Bar */}
@@ -936,7 +1348,68 @@ export default function FileEditor() {
         <div className="flex items-center gap-3">
           <span>{fileInfo.label || '文本'}</span>
           <span>UTF-8</span>
-          {fileInfo.ext === 'py' && <span>venv: default</span>}
+          {fileInfo.ext === 'py' && availablePythonEnvs.length > 0 && (
+            <div className="relative">
+              <button
+                ref={pythonEnvBtnRef}
+                onClick={() => setShowPythonDropdown(!showPythonDropdown)}
+                className="flex items-center gap-1 text-[11px] rounded px-2 py-0.5 border-none outline-none cursor-pointer transition-colors hover:brightness-110"
+                style={{ background: 'var(--na-bg-active)', color: 'var(--na-text-secondary)', fontFamily: 'var(--na-font-mono)' }}
+                title={availablePythonEnvs.find(e => e.id === selectedPythonEnvId)?.pythonPath || ''}
+              >
+                <span className="truncate max-w-[120px]">{availablePythonEnvs.find(e => e.id === selectedPythonEnvId)?.label || 'Python'}</span>
+                <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--na-text-tertiary)' }} />
+              </button>
+              {showPythonDropdown && pythonEnvBtnRef.current &&
+                createPortal(
+                  <div
+                    ref={pythonDropdownRef}
+                    className="fixed z-[60] overflow-y-auto py-1"
+                    style={{
+                      left: pythonEnvBtnRef.current.getBoundingClientRect().left,
+                      bottom: window.innerHeight - pythonEnvBtnRef.current.getBoundingClientRect().top + 4,
+                      minWidth: Math.max(pythonEnvBtnRef.current.getBoundingClientRect().width, 200),
+                      maxHeight: 260,
+                      borderRadius: 'var(--na-radius-lg)',
+                      background: 'var(--na-bg-popover)',
+                      boxShadow: 'var(--na-shadow-lg)',
+                      border: '1px solid var(--na-border-subtle)',
+                    }}
+                  >
+                    {availablePythonEnvs.map((env) => (
+                      <button
+                        key={env.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleSelectPythonEnv(env.id)
+                          setShowPythonDropdown(false)
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-[12px] transition-colors flex items-center gap-2 hover:bg-[var(--na-bg-hover)]"
+                        style={{
+                          background: env.id === selectedPythonEnvId ? 'var(--na-bg-active)' : 'transparent',
+                          color: 'var(--na-text-primary)',
+                        }}
+                      >
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded shrink-0 font-medium"
+                          style={{
+                            background: env.type === 'conda' ? 'rgba(59,130,246,0.12)' : env.type === 'uv-agent' ? 'rgba(124,58,237,0.12)' : 'rgba(16,185,129,0.12)',
+                            color: env.type === 'conda' ? '#3b82f6' : env.type === 'uv-agent' ? '#7c3aed' : '#10b981',
+                          }}
+                        >
+                          {env.type === 'conda' ? 'conda' : env.type === 'uv-agent' ? 'agent' : env.type === 'system' ? 'sys' : 'venv'}
+                        </span>
+                        <span className="truncate flex-1">{env.label}</span>
+                        {env.id === selectedPythonEnvId && (
+                          <Check className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--na-status-ask)' }} />
+                        )}
+                      </button>
+                    ))}
+                  </div>,
+                  document.body
+                )}
+            </div>
+          )}
           {(effectiveKind === 'code' || effectiveKind === 'markdown') && (
             <span style={{ color: 'var(--na-text-secondary)' }}>行 {cursorPos.line}, 列 {cursorPos.column}</span>
           )}
@@ -1044,8 +1517,9 @@ export default function FileEditor() {
           )}
 
           <button
+            onClick={() => setTerminalVisible((v) => !v)}
             className="p-0.5 rounded transition-colors hover:opacity-70"
-            style={{ color: 'var(--na-text-tertiary)' }}
+            style={{ color: terminalVisible ? 'var(--na-accent)' : 'var(--na-text-tertiary)' }}
             title="终端 (Cmd+`)"
           >
             <Terminal className="w-3 h-3" />

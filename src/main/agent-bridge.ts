@@ -9,6 +9,8 @@
  * - 新增 IPC：switchModel / getCostReport / getSwitchHistory / resolveFileReferences
  */
 import { ipcMain, BrowserWindow } from 'electron'
+import { TerminalManager } from './terminal'
+import { getShellEnvFromDb } from './shell-env'
 import {
   AgentEngine,
   MultiProviderEngine,
@@ -44,6 +46,7 @@ import {
   AddWordParagraphTool,
   DeleteWordParagraphTool,
   ModifyWordFormatTool,
+  PathJoinTool,
   DoneTool,
   ModelRouter,
   createTriModelConfig,
@@ -57,7 +60,7 @@ import type { Message, AgentEvent, LLMConfig, PermissionMode } from '../agent'
 import type { Database } from './db'
 import { existsSync, readFileSync } from 'fs'
 import { join, isAbsolute } from 'path'
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
 
 // ── Provider Config (from Settings) ──
 
@@ -120,6 +123,7 @@ function initTools() {
     AddWordParagraphTool,
     DeleteWordParagraphTool,
     ModifyWordFormatTool,
+    PathJoinTool,
     DoneTool,
   ]
   tools.forEach(registerTool)
@@ -930,18 +934,73 @@ export function registerAgentBridge() {
     return hasCompletedShellEnvSetup()
   })
 
-  // Python / uv virtual environment
+  // Python LSP (pyright)
+  ipcMain.handle('pythonLsp:start', async (_event, workspacePath: string) => {
+    const { startPythonLSP } = await import('./python-lsp')
+    const db = getDb()
+    const savedId = db?.getSetting(`pythonEnv:${workspacePath}`) || null
+    return await startPythonLSP(workspacePath, savedId, (event) => {
+      BrowserWindow.getAllWindows().forEach((win) => {
+        win.webContents.send('pythonLsp:diagnostics', workspacePath, event)
+      })
+    })
+  })
+  ipcMain.handle('pythonLsp:stop', async (_event, workspacePath: string) => {
+    const { stopPythonLSP } = await import('./python-lsp')
+    await stopPythonLSP(workspacePath)
+    return { success: true }
+  })
+  ipcMain.handle('pythonLsp:open', async (_event, workspacePath: string, uri: string, text: string) => {
+    const { openPythonDocument } = await import('./python-lsp')
+    await openPythonDocument(workspacePath, uri, text)
+    return { success: true }
+  })
+  ipcMain.handle('pythonLsp:change', async (_event, workspacePath: string, uri: string, text: string) => {
+    const { changePythonDocument } = await import('./python-lsp')
+    await changePythonDocument(workspacePath, uri, text)
+    return { success: true }
+  })
+  ipcMain.handle('pythonLsp:completion', async (_event, workspacePath: string, uri: string, position: { line: number; character: number }) => {
+    const { getPythonCompletion } = await import('./python-lsp')
+    return await getPythonCompletion(workspacePath, uri, position)
+  })
+  ipcMain.handle('pythonLsp:hover', async (_event, workspacePath: string, uri: string, position: { line: number; character: number }) => {
+    const { getPythonHover } = await import('./python-lsp')
+    return await getPythonHover(workspacePath, uri, position)
+  })
+
+  // Python / uv / conda virtual environment
   ipcMain.handle('pythonEnv:ensureUv', async () => {
     const { ensureUvInstalled } = await import('./python-env')
     return await ensureUvInstalled()
   })
-  ipcMain.handle('pythonEnv:ensureVenv', async (_event, workspacePath: string) => {
-    const { ensureWorkspaceVenv } = await import('./python-env')
-    return await ensureWorkspaceVenv(workspacePath)
+  ipcMain.handle('pythonEnv:ensureAgentVenv', async (_event, workspacePath: string) => {
+    const { ensureAgentVenv } = await import('./python-env')
+    return await ensureAgentVenv(workspacePath)
   })
-  ipcMain.handle('pythonEnv:getPython', async (_event, workspacePath: string) => {
-    const { getWorkspacePythonPath } = await import('./python-env')
-    return getWorkspacePythonPath(workspacePath)
+  ipcMain.handle('pythonEnv:getAgentPython', async (_event, workspacePath: string) => {
+    const { getAgentPythonPath } = await import('./python-env')
+    return getAgentPythonPath(workspacePath)
+  })
+  ipcMain.handle('pythonEnv:listAvailable', async (_event, workspacePath: string) => {
+    const { getAvailablePythonEnvs } = await import('./python-env')
+    return getAvailablePythonEnvs(workspacePath)
+  })
+  ipcMain.handle('pythonEnv:getSelected', async (_event, workspacePath: string, savedId: string | null) => {
+    const { getSelectedPythonEnv } = await import('./python-env')
+    return getSelectedPythonEnv(workspacePath, savedId)
+  })
+  ipcMain.handle('pythonEnv:isCondaInstalled', async () => {
+    const { isCondaInstalled } = await import('./python-env')
+    return isCondaInstalled()
+  })
+  ipcMain.handle('pythonEnv:listCondaEnvs', async () => {
+    const { listCondaEnvs } = await import('./python-env')
+    return listCondaEnvs()
+  })
+  ipcMain.handle('pythonEnv:isUvInstalled', async () => {
+    const { isUvInstalled } = await import('./python-env')
+    return isUvInstalled()
   })
 
   // Get model switch history for a session
@@ -1016,6 +1075,66 @@ export function registerAgentBridge() {
     } catch {
       return []
     }
+  })
+
+  // ── Terminal ──
+  const terminalManager = new TerminalManager()
+
+  terminalManager.on('data', ({ id, data }) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('terminal:data', { id, data })
+    })
+  })
+  terminalManager.on('exit', ({ id, exitCode }) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('terminal:exit', { id, exitCode })
+    })
+  })
+
+  ipcMain.handle('terminal:create', async (_event, opts?: { shell?: string; cwd?: string; workspacePath?: string }) => {
+    let pythonEnv = null
+    if (opts?.workspacePath) {
+      const { getSelectedPythonEnv } = await import('./python-env')
+      const db = getDb()
+      const savedId = db?.getSetting(`pythonEnv:${opts.workspacePath}`) || null
+      pythonEnv = getSelectedPythonEnv(opts.workspacePath, savedId)
+    }
+    const session = terminalManager.create(opts?.shell, opts?.cwd, pythonEnv)
+    return { id: session.id, shell: session.shell }
+  })
+  ipcMain.handle('terminal:write', async (_event, id: string, data: string) => {
+    terminalManager.write(id, data)
+  })
+  ipcMain.handle('terminal:resize', async (_event, id: string, cols: number, rows: number) => {
+    terminalManager.resize(id, cols, rows)
+  })
+  ipcMain.handle('terminal:kill', async (_event, id: string) => {
+    terminalManager.kill(id)
+  })
+  ipcMain.handle('terminal:listShells', async () => {
+    const shells: { name: string; path: string }[] = []
+    if (platform() === 'win32') {
+      shells.push({ name: 'PowerShell', path: 'powershell.exe' })
+      shells.push({ name: 'CMD', path: 'cmd.exe' })
+      const env = getShellEnvFromDb()
+      if (env?.type === 'gitbash') shells.push({ name: 'Git Bash', path: env.path || 'bash.exe' })
+      if (env?.type === 'wsl') shells.push({ name: 'WSL', path: 'wsl.exe' })
+    } else {
+      shells.push({ name: 'Bash', path: '/bin/bash' })
+      if (existsSync('/bin/zsh')) shells.push({ name: 'Zsh', path: '/bin/zsh' })
+      if (existsSync('/usr/bin/fish')) shells.push({ name: 'Fish', path: '/usr/bin/fish' })
+    }
+    return shells
+  })
+
+  ipcMain.handle('terminal:getDefaultShell', async () => {
+    const { getTerminalDefaultShell } = await import('./terminal')
+    return getTerminalDefaultShell()
+  })
+
+  ipcMain.handle('terminal:setDefaultShell', async (_event, shell: string) => {
+    const { saveTerminalDefaultShell } = await import('./terminal')
+    saveTerminalDefaultShell(shell)
   })
 }
 

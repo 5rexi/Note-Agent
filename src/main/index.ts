@@ -92,7 +92,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   db = new Database()
   db.init()
   ;(global as any).__db = db
@@ -122,6 +122,19 @@ app.whenReady().then(() => {
   ipcMain.on('path:normalize', (event, p: string) => { event.returnValue = normalize(p) })
 
   taskManager.loadPersisted()
+
+  // Auto-detect / install uv on startup
+  try {
+    const { ensureUvInstalled } = await import('./python-env')
+    const uvPath = await ensureUvInstalled()
+    if (!uvPath) {
+      console.warn('[App] uv not found and could not be auto-installed')
+    } else {
+      console.log('[App] uv ready:', uvPath)
+    }
+  } catch (err) {
+    console.warn('[App] uv check failed:', err)
+  }
 
   createWindow()
 })

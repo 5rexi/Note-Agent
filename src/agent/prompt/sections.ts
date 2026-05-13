@@ -359,11 +359,12 @@ Many skill READMEs say "install to ~/.claude/skills/" or "install to ~/.agents/s
 1. Note Agent ONLY loads skills from the current workspace: \`${wsSkill}/\`. No exceptions.
 2. ABSOLUTE RULE: NEVER install skills to \`~/.claude/skills/\`, \`~/.agents/skills/\`, \`~/.cline/skills/\`, \`%USERPROFILE%\.claude\skills\`, or any user home directory. These paths are FORBIDDEN and will NOT work.
 3. No matter what the skill README says, no matter what the skill calls itself ("Claude Code skill", "npx skill", etc.), you ALWAYS install it to Note Agent's workspace path: \`${wsSkill}/<skill-name>/\`.
-4. The ONLY valid installation command is:
+4. NEVER use string concatenation (+) to build paths. It produces broken paths like \`.note_agentskills\` instead of \`.note_agent/skills\`. ALWAYS use the **pathJoin** tool to join path segments.
+5. The ONLY valid installation command is:
    \`\`\`bash
    git clone <repo-url> "${wsSkill}/<skill-name>"
    \`\`\`
-5. After installing, verify the skill exists ONLY in the workspace directory \`${wsSkill}/<skill-name>/SKILL.md\`.
+6. After installing, verify the skill exists ONLY in the workspace directory \`${wsSkill}/<skill-name>/SKILL.md\`.
 
 ### APIs
 - Storage: \`${wsApi}\`

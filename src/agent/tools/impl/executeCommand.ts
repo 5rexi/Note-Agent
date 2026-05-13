@@ -93,6 +93,10 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
       // Route python commands to workspace venv if available
       execCommand = rewritePythonCommand(execCommand, ctx.workspacePath)
 
+      // Replace Windows-style `> nul` / `2> nul` redirects with Linux equivalents
+      // to avoid creating a literal `nul` file on Linux/WSL
+      execCommand = execCommand.replace(/>\s*nul\b/g, '> /dev/null').replace(/2>\s*nul\b/g, '2> /dev/null')
+
       const stdout = execSync(execCommand, execOptions)
       return { data: { stdout, stderr: '', exitCode: 0 } }
     } catch (err: any) {

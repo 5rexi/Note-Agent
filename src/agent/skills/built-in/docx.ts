@@ -49,6 +49,7 @@ export const DOCX_SKILL_SUMMARY = [
   '- ONLY fall back to XML editing when the Word tools cannot handle the specific requirement.',
   '- Create new docs: use `docx` npm package in `.note_agent/temp/` (see full guidelines).',
   '- ALL intermediate files (scripts, node_modules, unpacked) MUST stay in `.note_agent/temp/`.',
+  '- ALWAYS use the **pathJoin** tool to build paths. NEVER use string concatenation (+).',
 ].join('\n')
 
 /**
@@ -67,6 +68,8 @@ export const DOCX_SKILL_CONTENT = [
   '',
   'Generate .docx files with the "docx" npm package, then execute the script via **executeCommand**.',
   'ALL intermediate work MUST happen inside `.note_agent/temp/` — do NOT pollute the workspace root.',
+  '',
+  '**Path rule: ALWAYS use the pathJoin tool to build paths. NEVER use string concatenation (+) which produces broken paths like `.note_agentskills` or `.note_agenttempunpacked`.**',
   '',
   '`docx` is pre-installed. Use it directly without npm install.',
   '',

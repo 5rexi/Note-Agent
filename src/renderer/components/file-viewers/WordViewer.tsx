@@ -4,6 +4,7 @@ import { Loader2, FileText, Eye, FileType, AlertCircle, Code, RefreshCw, List, E
 import { toast } from 'sonner'
 import { themeAtom } from '../../atoms'
 
+
 interface WordViewerProps {
   filePath: string
 }
@@ -26,9 +27,10 @@ export default function WordViewer({ filePath }: WordViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('html')
   const [html, setHtml] = useState<string | null>(null)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isConverting, setIsConverting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [htmlLoading, setHtmlLoading] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [htmlError, setHtmlError] = useState<string | null>(null)
+  const [pdfError, setPdfError] = useState<string | null>(null)
   const [isUnpacking, setIsUnpacking] = useState(false)
   const [cachedHit, setCachedHit] = useState(false)
   const [showStructure, setShowStructure] = useState(false)
@@ -68,13 +70,23 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     setViewMode(wordEnabled ? 'pdf' : 'html')
   }, [wordEnabled])
 
-  // When switching to split mode, ensure both previews are loaded
+  // Load preview based on filePath + viewMode — single source of truth
   useEffect(() => {
-    if (viewMode === 'split') {
-      if (!html) loadHtmlPreview()
-      if (!pdfUrl && !isConverting && wordEnabled) loadPdfPreview()
+    if (viewMode === 'html') {
+      loadHtmlPreview()
+    } else if (viewMode === 'pdf') {
+      loadPdfPreview()
+    } else if (viewMode === 'split') {
+      loadHtmlPreview()
+      if (wordEnabled) loadPdfPreview()
     }
-  }, [viewMode])
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl)
+        setPdfUrl(null)
+      }
+    }
+  }, [filePath, viewMode])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -105,31 +117,32 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
   // Load HTML preview — use backend document.xml parser for 100% index sync
   const loadHtmlPreview = useCallback(() => {
-    setIsLoading(true)
-    setError(null)
+    setHtmlLoading(true)
+    setHtmlError(null)
     setHtml(null)
     setCachedHit(false)
 
     window.electronAPI.wordConvertToIndexedHtml(filePath)
       .then((result) => {
         if (result.error) {
-          setError(result.error)
-          setIsLoading(false)
+          setHtmlError(result.error)
+          setHtmlLoading(false)
           return
         }
         setHtml(result.html || '')
-        setIsLoading(false)
+        setHtmlError(null)
+        setHtmlLoading(false)
       })
       .catch((err) => {
-        setError(err.message || '转换失败')
-        setIsLoading(false)
+        setHtmlError(err.message || '转换失败')
+        setHtmlLoading(false)
       })
   }, [filePath])
 
   // Load PDF preview (soffice conversion with cache)
   const loadPdfPreview = useCallback(async (forceRefresh = false) => {
-    setIsConverting(true)
-    setError(null)
+    setPdfLoading(true)
+    setPdfError(null)
     setPdfUrl(null)
     setCachedHit(false)
 
@@ -143,7 +156,8 @@ export default function WordViewer({ filePath }: WordViewerProps) {
             const buffer = base64ToArrayBuffer(base64Result.data)
             const blob = new Blob([buffer], { type: 'application/pdf' })
             setPdfUrl(URL.createObjectURL(blob))
-            setIsConverting(false)
+            setPdfError(null)
+            setPdfLoading(false)
             return
           }
         }
@@ -154,25 +168,29 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
       const result = await window.electronAPI.wordConvertToPdf(filePath)
       if (result.error || !result.pdfPath) {
-        setError(result.error || 'PDF 转换失败')
-        setIsConverting(false)
+        setPdfError(result.error || 'PDF 转换失败')
+        setPdfUrl(null)
+        setPdfLoading(false)
         return
       }
 
       const base64Result = await window.electronAPI.readFileBase64(result.pdfPath)
       if (base64Result.error) {
-        setError(base64Result.error)
-        setIsConverting(false)
+        setPdfError(base64Result.error)
+        setPdfUrl(null)
+        setPdfLoading(false)
         return
       }
 
       const buffer = base64ToArrayBuffer(base64Result.data)
       const blob = new Blob([buffer], { type: 'application/pdf' })
       setPdfUrl(URL.createObjectURL(blob))
-      setIsConverting(false)
+      setPdfError(null)
+      setPdfLoading(false)
     } catch (e: any) {
-      setError(e.message || 'PDF 加载失败')
-      setIsConverting(false)
+      setPdfError(e.message || 'PDF 加载失败')
+      setPdfUrl(null)
+      setPdfLoading(false)
     }
   }, [filePath])
 
@@ -204,7 +222,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
     container.addEventListener('dblclick', handleDblClick)
     return () => container.removeEventListener('dblclick', handleDblClick)
-  }, [editingParagraph, processedHtml, isDark])
+  }, [editingParagraph, processedHtml, isDark, viewMode])
 
   // Handle edit save/cancel
   useEffect(() => {
@@ -284,22 +302,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
       el.removeEventListener('blur', handleBlur)
       el.removeEventListener('keydown', handleKeyDown)
     }
-  }, [editingParagraph, filePath, loadHtmlPreview])
-
-  // Load preview based on mode
-  useEffect(() => {
-    if (viewMode === 'html') {
-      loadHtmlPreview()
-    } else {
-      loadPdfPreview()
-    }
-    return () => {
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl)
-        setPdfUrl(null)
-      }
-    }
-  }, [filePath, viewMode])
+  }, [editingParagraph, filePath, loadHtmlPreview, viewMode])
 
   // Clear selection when clicking outside the HTML container AND outside the toolbar
   useEffect(() => {
@@ -327,18 +330,20 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     window.electronAPI.wordWatchExternal(filePath)
     const unsubWord = window.electronAPI.onWordExternalChanged((changedPath) => {
       if (changedPath === filePath && !isSavingRef.current) {
-        if (viewMode === 'pdf') {
+        if (viewMode === 'pdf' || viewMode === 'split') {
           loadPdfPreview(true)
-        } else {
+        }
+        if (viewMode === 'html' || viewMode === 'split') {
           loadHtmlPreview()
         }
       }
     })
     const unsubFs = window.electronAPI.onFileChanged((event) => {
       if (event.path === filePath && !isSavingRef.current) {
-        if (viewMode === 'pdf') {
+        if (viewMode === 'pdf' || viewMode === 'split') {
           loadPdfPreview(true)
-        } else {
+        }
+        if (viewMode === 'html' || viewMode === 'split') {
           loadHtmlPreview()
         }
       }
@@ -493,7 +498,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
               onClick={async () => {
                 const result = await window.electronAPI.wordOpenWithLibreOffice(filePath)
                 if (!result.success) {
-                  setError(result.error || '启动 LibreOffice 失败')
+                  toast.error(result.error || '启动 LibreOffice 失败')
                 }
               }}
               className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
@@ -536,12 +541,12 @@ export default function WordViewer({ filePath }: WordViewerProps) {
           {wordEnabled && (viewMode === 'pdf' || viewMode === 'split') && (
             <button
               onClick={() => loadPdfPreview(true)}
-              disabled={isConverting}
+              disabled={pdfLoading}
               className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
               style={{ background: 'var(--na-bg-panel)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}
               title="强制重新生成 PDF"
             >
-              {isConverting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              {pdfLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               刷新
             </button>
           )}
@@ -595,7 +600,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
                     }, 300)
                   }
                 } catch (e: any) {
-                  setError(e.message || '解压失败')
+                  toast.error(e.message || '解压失败')
                 } finally {
                   setIsUnpacking(false)
                 }
@@ -626,15 +631,15 @@ export default function WordViewer({ filePath }: WordViewerProps) {
         {/* HTML Preview */}
         {viewMode === 'html' && (
           <div className="h-full overflow-auto">
-            {isLoading && (
+            {htmlLoading && (
               <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
                 <span className="text-sm">加载文档...</span>
               </div>
             )}
-            {error && !isLoading && (
+            {htmlError && !htmlLoading && (
               <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-status-explore)' }}>
-                <span className="text-sm">加载失败: {error}</span>
+                <span className="text-sm">加载失败: {htmlError}</span>
               </div>
             )}
             {processedHtml && (
@@ -773,15 +778,15 @@ export default function WordViewer({ filePath }: WordViewerProps) {
         {/* PDF Preview */}
         {viewMode === 'pdf' && (
           <div className="h-full overflow-hidden">
-            {isConverting && (
+            {pdfLoading && (
               <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
                 <span className="text-sm">转换为 PDF...</span>
               </div>
             )}
-            {error && !isConverting && (
+            {pdfError && !pdfLoading && (
               <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--na-status-explore)' }}>
-                <span className="text-sm">PDF 转换失败: {error}</span>
+                <span className="text-sm">PDF 转换失败: {pdfError}</span>
                 <button
                   onClick={() => setViewMode('html')}
                   className="px-3 py-1 text-[11px] rounded transition-colors"
@@ -791,7 +796,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
                 </button>
               </div>
             )}
-            {pdfUrl && !isConverting && (
+            {pdfUrl && !pdfLoading && (
               <iframe
                 src={pdfUrl}
                 className="w-full h-full"
@@ -807,15 +812,15 @@ export default function WordViewer({ filePath }: WordViewerProps) {
           <div className="h-full grid grid-cols-2">
             {/* Left: HTML */}
             <div className="h-full overflow-auto border-r border-[var(--na-border-subtle)]">
-              {isLoading && (
+              {htmlLoading && (
                 <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
                   <Loader2 className="w-5 h-5 animate-spin mr-2" />
                   <span className="text-sm">加载文档...</span>
                 </div>
               )}
-              {error && !isLoading && (
+              {htmlError && !htmlLoading && (
                 <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-status-explore)' }}>
-                  <span className="text-sm">加载失败: {error}</span>
+                  <span className="text-sm">加载失败: {htmlError}</span>
                 </div>
               )}
               {processedHtml && (
@@ -948,15 +953,15 @@ export default function WordViewer({ filePath }: WordViewerProps) {
             </div>
             {/* Right: PDF */}
             <div className="h-full overflow-hidden">
-              {isConverting && (
+              {pdfLoading && (
                 <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
                   <Loader2 className="w-5 h-5 animate-spin mr-2" />
                   <span className="text-sm">转换为 PDF...</span>
                 </div>
               )}
-              {error && !isConverting && (
+              {pdfError && !pdfLoading && (
                 <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--na-status-explore)' }}>
-                  <span className="text-sm">PDF 转换失败: {error}</span>
+                  <span className="text-sm">PDF 转换失败: {pdfError}</span>
                   <button
                     onClick={() => setViewMode('html')}
                     className="px-3 py-1 text-[11px] rounded transition-colors"
@@ -966,7 +971,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
                   </button>
                 </div>
               )}
-              {pdfUrl && !isConverting && (
+              {pdfUrl && !pdfLoading && (
                 <iframe
                   src={pdfUrl}
                   className="w-full h-full"

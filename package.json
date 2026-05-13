@@ -8,7 +8,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "dev": "bun run scripts/build.ts --dev",
-    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:better-sqlite3",
+    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:better-sqlite3 --external:node-pty",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron",
     "build:renderer": "vite build",
     "build": "bun run build:main && bun run build:preload && bun run build:renderer",
@@ -32,6 +32,9 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "node_modules/pyright/**/*"
+    ],
     "npmRebuild": false,
     "win": {
       "icon": "assets/icon.ico",
@@ -55,6 +58,8 @@
     "@ai-sdk/openai-compatible": "^2.0.45",
     "@anthropic-ai/sdk": "^0.41.0",
     "@xmldom/xmldom": "^0.9.10",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "adm-zip": "^0.5.17",
     "ai": "^5.0.182",
     "better-sqlite3": "^12.1.0",
@@ -69,9 +74,11 @@
     "minimatch": "^10.2.5",
     "monaco-editor": "^0.55.1",
     "next-themes": "^0.4.6",
+    "node-pty": "^1.1.0",
     "openai": "^4.95.0",
     "pptx-to-pdf": "^0.1.3",
     "pptxgenjs": "^4.0.1",
+    "pyright": "^1.1.409",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",

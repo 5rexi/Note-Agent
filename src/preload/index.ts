@@ -134,10 +134,37 @@ export interface ElectronAPI {
   shellEnvSet: (config: { type: 'gitbash' | 'wsl' | 'native'; path?: string }) => Promise<{ success: boolean }>
   shellEnvHasSetup: () => Promise<boolean>
 
-  // Python / uv Environment
+  // Python LSP
+  pythonLspStart: (workspacePath: string) => Promise<boolean>
+  pythonLspStop: (workspacePath: string) => Promise<{ success: boolean }>
+  pythonLspOpen: (workspacePath: string, uri: string, text: string) => Promise<{ success: boolean }>
+  pythonLspChange: (workspacePath: string, uri: string, text: string) => Promise<{ success: boolean }>
+  pythonLspCompletion: (workspacePath: string, uri: string, position: { line: number; character: number }) => Promise<any[]>
+  pythonLspHover: (workspacePath: string, uri: string, position: { line: number; character: number }) => Promise<{ contents: string } | null>
+  onPythonLspDiagnostics: (callback: (workspacePath: string, event: { uri: string; diagnostics: any[] }) => void) => () => void
+
+  // Python / uv / conda Environment
   pythonEnvEnsureUv: () => Promise<string | null>
-  pythonEnvEnsureVenv: (workspacePath: string) => Promise<string | null>
-  pythonEnvGetPython: (workspacePath: string) => Promise<string | null>
+  pythonEnvEnsureAgentVenv: (workspacePath: string) => Promise<string | null>
+  pythonEnvGetAgentPython: (workspacePath: string) => Promise<string | null>
+  pythonEnvListAvailable: (workspacePath: string) => Promise<Array<{ id: string; label: string; type: string; pythonPath: string | null; venvPath?: string; condaEnvName?: string }>>
+  pythonEnvGetSelected: (workspacePath: string, savedId: string | null) => Promise<{ id: string; label: string; type: string; pythonPath: string | null; venvPath?: string; condaEnvName?: string } | null>
+  pythonEnvIsCondaInstalled: () => Promise<boolean>
+  pythonEnvListCondaEnvs: () => Promise<Array<{ name: string; path: string }>>
+  pythonEnvIsUvInstalled: () => Promise<boolean>
+
+  // Terminal
+  terminal: {
+    create: (opts?: { shell?: string; cwd?: string; workspacePath?: string }) => Promise<{ id: string; shell: string }>
+    write: (id: string, data: string) => Promise<void>
+    resize: (id: string, cols: number, rows: number) => Promise<void>
+    kill: (id: string) => Promise<void>
+    listShells: () => Promise<{ name: string; path: string }[]>
+    getDefaultShell: () => Promise<string | null>
+    setDefaultShell: (shell: string) => Promise<void>
+    onData: (cb: (event: { id: string; data: string }) => void) => () => void
+    onExit: (cb: (event: { id: string; exitCode: number }) => void) => () => void
+  }
 
   // Dialog
   openDirectory: () => Promise<{ path: string | null; canceled: boolean }>
@@ -314,10 +341,49 @@ const api: ElectronAPI = {
   shellEnvSet: (config) => ipcRenderer.invoke('shellEnv:set', config),
   shellEnvHasSetup: () => ipcRenderer.invoke('shellEnv:hasSetup'),
 
-  // Python / uv Environment
+  // Python LSP
+  pythonLspStart: (workspacePath) => ipcRenderer.invoke('pythonLsp:start', workspacePath),
+  pythonLspStop: (workspacePath) => ipcRenderer.invoke('pythonLsp:stop', workspacePath),
+  pythonLspOpen: (workspacePath, uri, text) => ipcRenderer.invoke('pythonLsp:open', workspacePath, uri, text),
+  pythonLspChange: (workspacePath, uri, text) => ipcRenderer.invoke('pythonLsp:change', workspacePath, uri, text),
+  pythonLspCompletion: (workspacePath, uri, position) => ipcRenderer.invoke('pythonLsp:completion', workspacePath, uri, position),
+  pythonLspHover: (workspacePath, uri, position) => ipcRenderer.invoke('pythonLsp:hover', workspacePath, uri, position),
+  onPythonLspDiagnostics: (callback) => {
+    const handler = (_: any, workspacePath: string, event: { uri: string; diagnostics: any[] }) => callback(workspacePath, event)
+    ipcRenderer.on('pythonLsp:diagnostics', handler)
+    return () => ipcRenderer.removeListener('pythonLsp:diagnostics', handler)
+  },
+
+  // Python / uv / conda Environment
   pythonEnvEnsureUv: () => ipcRenderer.invoke('pythonEnv:ensureUv'),
-  pythonEnvEnsureVenv: (workspacePath) => ipcRenderer.invoke('pythonEnv:ensureVenv', workspacePath),
-  pythonEnvGetPython: (workspacePath) => ipcRenderer.invoke('pythonEnv:getPython', workspacePath),
+  pythonEnvEnsureAgentVenv: (workspacePath) => ipcRenderer.invoke('pythonEnv:ensureAgentVenv', workspacePath),
+  pythonEnvGetAgentPython: (workspacePath) => ipcRenderer.invoke('pythonEnv:getAgentPython', workspacePath),
+  pythonEnvListAvailable: (workspacePath) => ipcRenderer.invoke('pythonEnv:listAvailable', workspacePath),
+  pythonEnvGetSelected: (workspacePath, savedId) => ipcRenderer.invoke('pythonEnv:getSelected', workspacePath, savedId),
+  pythonEnvIsCondaInstalled: () => ipcRenderer.invoke('pythonEnv:isCondaInstalled'),
+  pythonEnvListCondaEnvs: () => ipcRenderer.invoke('pythonEnv:listCondaEnvs'),
+  pythonEnvIsUvInstalled: () => ipcRenderer.invoke('pythonEnv:isUvInstalled'),
+
+  // Terminal
+  terminal: {
+    create: (opts) => ipcRenderer.invoke('terminal:create', opts),
+    write: (id, data) => ipcRenderer.invoke('terminal:write', id, data),
+    resize: (id, cols, rows) => ipcRenderer.invoke('terminal:resize', id, cols, rows),
+    kill: (id) => ipcRenderer.invoke('terminal:kill', id),
+    listShells: () => ipcRenderer.invoke('terminal:listShells'),
+    getDefaultShell: () => ipcRenderer.invoke('terminal:getDefaultShell'),
+    setDefaultShell: (shell) => ipcRenderer.invoke('terminal:setDefaultShell', shell),
+    onData: (cb) => {
+      const handler = (_: any, payload: any) => cb(payload)
+      ipcRenderer.on('terminal:data', handler)
+      return () => ipcRenderer.removeListener('terminal:data', handler)
+    },
+    onExit: (cb) => {
+      const handler = (_: any, payload: any) => cb(payload)
+      ipcRenderer.on('terminal:exit', handler)
+      return () => ipcRenderer.removeListener('terminal:exit', handler)
+    },
+  },
 
   openDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
   openFile: (options) => ipcRenderer.invoke('dialog:openFile', options ?? {}),

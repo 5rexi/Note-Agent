@@ -47,7 +47,11 @@ export class LSPClient extends EventEmitter {
   private initialized = false
   private serverCapabilities: any = {}
 
-  constructor(private command: string, private args: string[] = []) {
+  constructor(
+    private command: string,
+    private args: string[] = [],
+    private rootUri?: string,
+  ) {
     super()
   }
 
@@ -74,7 +78,8 @@ export class LSPClient extends EventEmitter {
     // Send initialize
     const result = await this.sendRequest('initialize', {
       processId: process.pid,
-      rootUri: `file://${process.cwd()}`,
+      rootUri: this.rootUri || `file://${process.cwd()}`,
+      workspaceFolders: this.rootUri ? [{ uri: this.rootUri, name: 'workspace' }] : undefined,
       capabilities: {
         textDocument: {
           hover: { dynamicRegistration: false },
@@ -207,6 +212,16 @@ export class LSPClient extends EventEmitter {
     return this.sendRequest('textDocument/documentSymbol', {
       textDocument: { uri },
     })
+  }
+
+  async getCompletions(uri: string, position: LSPPosition): Promise<any[]> {
+    if (!this.serverCapabilities.completionProvider) return []
+    const result = await this.sendRequest('textDocument/completion', {
+      textDocument: { uri },
+      position,
+    })
+    if (!result) return []
+    return Array.isArray(result) ? result : result.items || []
   }
 
   isInitialized(): boolean {

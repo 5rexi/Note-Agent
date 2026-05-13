@@ -34,6 +34,7 @@ import {
   AddWordParagraphTool,
   DeleteWordParagraphTool,
   ModifyWordFormatTool,
+  PathJoinTool,
   ModelRouter,
   createDualModelConfig,
   createTriModelConfig,
@@ -302,6 +303,7 @@ async function main(): Promise<void> {
     AddWordParagraphTool,
     DeleteWordParagraphTool,
     ModifyWordFormatTool,
+    PathJoinTool,
   ]
   tools.forEach(registerTool)
 
