@@ -1337,7 +1337,7 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
                     <p className="text-[13px] mt-1" style={{ color: 'var(--na-text-secondary)' }}>Local-first, task-session driven desktop agent workspace</p>
                   </div>
                   <div className="space-y-1 text-[12px]" style={{ color: 'var(--na-text-tertiary)' }}>
-                    <p>{t('version')} v0.1.0</p>
+                    <p>{t('version')} v0.2.0</p>
                     <p>{t('author')} 老鸡软糖</p>
                   </div>
                   <div className="p-3 rounded-lg text-left w-full" style={{ background: 'var(--na-bg-active)', border: '1px solid var(--na-border-subtle)' }}>

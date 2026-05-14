@@ -90,7 +90,7 @@ export class MCPClient {
     await this.sendRequest('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'note-agent', version: '0.1.0' },
+      clientInfo: { name: 'note-agent', version: '0.2.0' },
     })
 
     this.connected = true

@@ -102,7 +102,7 @@ async function main() {
     console.log(`Final messages count: ${engine.getMessages().length}`)
 
     // Verify the model actually read the file
-    if (textBuffer.toLowerCase().includes('note-agent') || textBuffer.toLowerCase().includes('0.1.0')) {
+    if (textBuffer.toLowerCase().includes('note-agent') || textBuffer.toLowerCase().includes('0.2.0')) {
       console.log('\n✓ SUCCESS: Model correctly read and summarized package.json')
     } else if (toolCallsCount > 0) {
       console.log('\n? PARTIAL: Model called tools but may not have mentioned the content')
