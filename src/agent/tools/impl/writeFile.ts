@@ -24,6 +24,13 @@ export const WriteFileTool: Tool<Input, { path: string; bytes: number }> = {
   isDestructive() { return true },
 
   checkPermissions(input, ctx) {
+    // Warn about suspiciously short content (likely a placeholder)
+    if (input.content.length < 20 && !input.path.includes('test') && !input.path.includes('temp')) {
+      return {
+        result: 'ask',
+        description: `Write file: ${input.path} — Content is only ${input.content.length} bytes ("${input.content.slice(0, 40)}"). This looks like a placeholder. Continue?`,
+      }
+    }
     // ASK 模式需要确认
     if (ctx.mode === 'ask') {
       return {

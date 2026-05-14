@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'os'
 import { taskManager } from '../agent'
 import { sendToRenderer } from './file-notify'
 import { savePdfCache, getCachedPdfPath } from './pdf-cache'
-import { convertWithSoffice } from './word-office'
+import { convertPptxToPdfWithPandoc } from './word-office'
 
 function findSystemCompiler(): string | null {
   const isWindows = process.platform === 'win32'
@@ -144,9 +144,9 @@ export function registerLatexHandlers() {
   })
 }
 
-// Office-to-PDF conversion (PPTX via LibreOffice, same as Word)
+// Office-to-PDF conversion (PPTX via pandoc, lightweight alternative to LibreOffice)
 async function convertPptxToPdf(filePath: string): Promise<{ pdfPath?: string; error?: string }> {
-  return convertWithSoffice(filePath, 'pdf')
+  return convertPptxToPdfWithPandoc(filePath)
 }
 
 export function registerOfficeHandlers() {

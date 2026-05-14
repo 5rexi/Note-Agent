@@ -28,3 +28,21 @@ export {
   type ReplaceParagraphOptions,
   type FormatChange,
 } from './word-paragraph'
+
+export {
+  openDocx,
+  saveDocx,
+  closeDocx,
+  resolvePath,
+  getElementInfo,
+  queryElements,
+  parseSelector,
+  getDocumentOutline,
+  getDocumentText,
+  getDocumentStats,
+  getDocumentIssues,
+  type DocxDocument,
+  type DocxElement,
+  type DocxNavError,
+  type QuerySelector,
+} from './docx-navigator'

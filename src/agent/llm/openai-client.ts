@@ -36,9 +36,10 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
               function: { name: tc.name, arguments: JSON.stringify(tc.input) },
             })),
           }
-          if (isDeepSeek && (m as any).reasoningContent) {
-            msg.reasoning_content = (m as any).reasoningContent
-          }
+          // NOTE: Do NOT pass reasoning_content back to the API. DeepSeek's API
+          // does not consume reasoning_content in the request; including it
+          // bloats context and can cause the model to reference its own
+          // reasoning, leading to loops and hallucinations.
           return msg
         }
         if (m.role === 'assistant') {
@@ -46,9 +47,7 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
             role: 'assistant',
             content: m.content,
           }
-          if (isDeepSeek && (m as any).reasoningContent) {
-            msg.reasoning_content = (m as any).reasoningContent
-          }
+          // NOTE: Do NOT pass reasoning_content back to the API. See above.
           return msg
         }
         if (m.role === 'tool') {

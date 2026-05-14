@@ -645,11 +645,13 @@ export default function WordViewer({ filePath }: WordViewerProps) {
             {processedHtml && (
               <div
                 ref={htmlContainerRef}
-                className="p-8 max-w-[800px] mx-auto"
+                className="py-8 px-4"
                 style={{
                   background: isDark ? '#141414' : '#fff',
                   color: isDark ? '#d0d0d0' : 'inherit',
                   minHeight: '100%',
+                  display: 'table',
+                  minWidth: '100%',
                 }}
                 dangerouslySetInnerHTML={{ __html: processedHtml }}
                 onMouseUp={() => {

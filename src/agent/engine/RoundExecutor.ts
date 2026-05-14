@@ -17,6 +17,7 @@ import { type CompactConfig, estimateMessageTokens } from '../compact'
 import { runTools } from './tool-executor'
 import { maybeCompactMessages } from './context-compactor'
 import { zodToJsonSchema } from './schema-conversion'
+import { logger } from '../logger'
 
 export interface RoundExecutorOptions {
   /** 固定配置，或每轮动态选择 */
@@ -52,7 +53,7 @@ export async function* executeRound(
     return opts.llmConfig
   }
 
-  const maxRounds = opts.maxRounds ?? 5
+  const maxRounds = opts.maxRounds ?? 20
   const autoCompact = opts.autoCompact !== false
 
   // Build tool schemas for API
@@ -123,7 +124,7 @@ export async function* executeRound(
       yield { type: 'error', message: 'LLM client not available' }
       return
     }
-    console.log(`[RoundExecutor] Round ${round}: calling LLM with ${apiMessages.length} messages, ${toolSchemas.length} tools`)
+    logger.info(`[RoundExecutor] Round ${round}: calling LLM with ${apiMessages.length} messages, ${toolSchemas.length} tools`)
     const stream = client.stream(apiMessages, toolSchemas, opts.signal)
     let roundText = ''
     let roundReasoning = ''
@@ -168,7 +169,7 @@ export async function* executeRound(
     }
 
     // Save assistant message
-    console.log(`[RoundExecutor] Round ${round} result: text=${roundText.length} chars, toolCalls=${roundToolCalls.length} [${roundToolCalls.map(t => t.name).join(', ')}]`)
+    logger.info(`[RoundExecutor] Round ${round} result: text=${roundText.length} chars, toolCalls=${roundToolCalls.length} [${roundToolCalls.map(t => t.name).join(', ')}]`)
     const assistantMsg: Message = {
       role: 'assistant',
       content: roundText,
@@ -184,7 +185,7 @@ export async function* executeRound(
 
     // 3-tier empty-round recovery
     if (roundToolCalls.length === 0) {
-      console.log(`[RoundExecutor] Round ${round}: EMPTY round detected (no tool calls).`)
+      logger.info(`[RoundExecutor] Round ${round}: EMPTY round detected (no tool calls).`)
       consecutiveEmptyRounds++
 
       // The system prompt allows text-only responses AFTER receiving tool results.
@@ -195,7 +196,7 @@ export async function* executeRound(
       const priorNonSystem = [...messages].slice(0, -1).reverse().find((m) => m.role !== 'system')
       const isReplyingToTools = priorNonSystem?.role === 'tool'
       if (isReplyingToTools && consecutiveEmptyRounds === 1) {
-        console.log(`[RoundExecutor] Round ${round}: Grace round after tool results — keeping message and continuing.`)
+        logger.info(`[RoundExecutor] Round ${round}: Grace round after tool results — keeping message and continuing.`)
         // Gentle reminder: if the task is done, call done instead of continuing
         messages.push({ role: 'system', content: 'Reminder: If you have completed the user\'s request, call `done` now. Do NOT repeat actions that have already succeeded.' })
         continue
@@ -215,13 +216,13 @@ export async function* executeRound(
         // treat it as a completion rather than a stall. The model may have
         // finished its work and is providing a final summary / answer.
         if (assistantHasMeaningfulText) {
-          console.log(`[RoundExecutor] Round ${round}: Model produced text-only response — treating as completion.`)
+          logger.info(`[RoundExecutor] Round ${round}: Model produced text-only response — treating as completion.`)
           // Restore the popped assistant message so the caller can persist it
           messages.push(currentAssistant)
           break
         }
 
-        console.log(`[RoundExecutor] Round ${round}: Task stalled after ${consecutiveEmptyRounds} empty rounds. Breaking.`)
+        logger.info(`[RoundExecutor] Round ${round}: Task stalled after ${consecutiveEmptyRounds} empty rounds. Breaking.`)
         yield { type: 'error', message: `Task stalled — model produced no tool calls for ${consecutiveEmptyRounds} consecutive rounds. The task cannot continue.` }
         break
       }
@@ -230,7 +231,7 @@ export async function* executeRound(
       const reminder = consecutiveEmptyRounds === 1
         ? 'CRITICAL: You have NOT called any tool. Stop writing text and CALL A TOOL IMMEDIATELY. No text responses are allowed — only tool calls.'
         : 'FINAL WARNING: You have not called any tool for 2 rounds. Call a tool NOW or the task will FAIL.'
-      console.log(`[RoundExecutor] Round ${round}: Injecting reminder (${consecutiveEmptyRounds} empty rounds)`)
+      logger.info(`[RoundExecutor] Round ${round}: Injecting reminder (${consecutiveEmptyRounds} empty rounds)`)
       messages.push({ role: 'system', content: reminder })
 
       continue
@@ -259,10 +260,10 @@ export async function* executeRound(
     // The conversation will resume after the user answers via the next user message.
     const hasAskQuestion = toolResults.some((tr) => tr.toolName === 'askUserQuestion')
 
-    console.log(`[RoundExecutor] Tool results: ${toolResults.length} tools executed`)
+    logger.info(`[RoundExecutor] Tool results: ${toolResults.length} tools executed`)
     for (const tr of toolResults) {
       const resultSummary = typeof tr.result === 'string' ? tr.result.slice(0, 100) : JSON.stringify(tr.result).slice(0, 100)
-      console.log(`[RoundExecutor]   - ${tr.toolName}: ${resultSummary}${resultSummary.length >= 100 ? '...' : ''}`)
+      logger.info(`[RoundExecutor]   - ${tr.toolName}: ${resultSummary}${resultSummary.length >= 100 ? '...' : ''}`)
       // Find the tool to potentially render a human-readable result for the LLM
       const tool = opts.tools.find((t) => t.name === tr.toolName || t.aliases?.includes(tr.toolName))
       let llmResult: unknown = tr.result
@@ -301,7 +302,7 @@ export async function* executeRound(
     // loop immediately so it doesn't wander off into unrelated reads.
     const doneResult = toolResults.find((tr) => tr.toolName === 'done')
     if (doneResult) {
-      console.log(`[RoundExecutor] done/terminate tool called — ending session.`)
+      logger.info(`[RoundExecutor] done/terminate tool called — ending session.`)
       endedByDone = true
       // If the assistant message has no text content, inject the done summary
       // so the UI shows a meaningful final message instead of an empty one.
@@ -311,7 +312,7 @@ export async function* executeRound(
           ? doneResult.result
           : (doneResult.result as any)?.summary || 'Task complete'
         lastAssistant.content = donePreview
-        console.log(`[RoundExecutor] Injected done summary into empty assistant message.`)
+        logger.info(`[RoundExecutor] Injected done summary into empty assistant message.`)
       }
       break
     }
@@ -326,7 +327,7 @@ export async function* executeRound(
     const exhaustedWithoutFinal = lastMessage?.role === 'tool'
       || (lastMessage?.role === 'assistant' && (lastMessage.toolCalls?.length ?? 0) > 0)
     if (exhaustedWithoutFinal) {
-      console.log(`[RoundExecutor] Hit maxRounds=${maxRounds} without final assistant turn.`)
+      logger.info(`[RoundExecutor] Hit maxRounds=${maxRounds} without final assistant turn.`)
       yield {
         type: 'error',
         message: `Agent reached the round limit (${maxRounds}) before finishing the task. Send a new message to continue, or raise the limit in settings (agentMaxRounds).`,

@@ -25,116 +25,152 @@ function getDb() {
   return (global as any).__db as import('./db').Database | undefined
 }
 
-// ── Get configured/bundled soffice ──
+// ── System default open (no LibreOffice) ──
 
-function getConfiguredSoffice(): string | null {
+function openWithSystemDefault(filePath: string): { success: boolean; error?: string } {
+  try {
+    const platform = process.platform
+    let command: string
+    let args: string[]
+    if (platform === 'darwin') {
+      command = 'open'
+      args = [filePath]
+    } else if (platform === 'win32') {
+      command = 'cmd.exe'
+      args = ['/c', 'start', ' "" ', filePath]
+    } else {
+      command = 'xdg-open'
+      args = [filePath]
+    }
+    const proc = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    })
+    proc.unref()
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || '打开文件失败' }
+  }
+}
+
+// ── Pandoc helpers (lightweight alternative to LibreOffice) ──
+
+function findPandoc(): string | null {
+  // 1. Check user-configured path first
   try {
     const db = (global as any).__db
-    if (!db) return null
-    const raw = db.getSetting('wordSupport')
-    if (!raw) return null
-    const config = JSON.parse(raw)
-    if (!config.enabled) return null
-    if (config.sofficeType === 'system-auto' || config.sofficeType === 'system-manual') {
-      return config.sofficePath || null
-    }
-    if (config.sofficeType === 'bundled') {
-      return config.bundledPath || null
+    if (db) {
+      const raw = db.getSetting('pandocSupport')
+      if (raw) {
+        const config = JSON.parse(raw)
+        if (config.enabled && config.path && existsSync(config.path)) {
+          return config.path
+        }
+      }
     }
   } catch {
     // ignore
   }
-  return null
-}
 
-let cachedSystemSoffice: string | null | undefined = undefined
-
-function findSystemSoffice(): string | null {
-  if (cachedSystemSoffice !== undefined) return cachedSystemSoffice
-  const { execSync } = require('child_process')
-  const isWindows = process.platform === 'win32'
-  const cmd = isWindows ? 'where' : 'which'
-  const names = isWindows ? ['soffice.exe', 'soffice'] : ['soffice', 'libreoffice']
-  for (const name of names) {
-    try {
-      const result = execSync(`${cmd} ${name}`, { encoding: 'utf-8', timeout: 3000, env: process.env }).trim().split('\n')[0]
-      if (result) {
-        cachedSystemSoffice = result
-        return result
-      }
-    } catch {
-      continue
-    }
+  // 2. Fall back to system PATH
+  try {
+    const { execSync } = require('child_process')
+    const cmd = process.platform === 'win32' ? 'where pandoc' : 'which pandoc'
+    const result = execSync(cmd, { encoding: 'utf-8', timeout: 3000, env: process.env }).trim().split('\n')[0]
+    return result || null
+  } catch {
+    return null
   }
-  cachedSystemSoffice = null
-  return null
 }
 
-export function getEffectiveSoffice(): string | null {
-  const configured = getConfiguredSoffice()
-  if (configured) return configured
-  return findSystemSoffice()
-}
-
-function invalidateSofficeCache() {
-  cachedSystemSoffice = undefined
-}
-
-// ── Conversion helpers ──
-
-export async function convertWithSoffice(filePath: string, targetFormat: string): Promise<{ pdfPath?: string; error?: string }> {
-  // Check cache first for PDF output
-  if (targetFormat === 'pdf') {
-    const cached = getCachedPdfPath(filePath)
-    if (cached.isFresh && cached.pdfPath) {
-      return { pdfPath: cached.pdfPath }
-    }
+export function getPandocInfo(): { installed: boolean; path: string | null; version: string | null } {
+  const path = findPandoc()
+  if (!path) return { installed: false, path: null, version: null }
+  try {
+    const { execSync } = require('child_process')
+    const version = execSync(`"${path}" --version`, { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0]
+    return { installed: true, path, version }
+  } catch {
+    return { installed: true, path, version: null }
   }
+}
 
-  const soffice = getEffectiveSoffice()
-  if (!soffice) {
-    return { error: '未找到 LibreOffice (soffice)。请在"设置 → 文件支持 → Word"中配置。' }
+export function verifyPandocPath(customPath: string): { ok: boolean; version: string | null; error?: string } {
+  try {
+    const { execSync } = require('child_process')
+    const version = execSync(`"${customPath}" --version`, { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0]
+    return { ok: true, version }
+  } catch (err: any) {
+    return { ok: false, version: null, error: err.message || '验证失败' }
   }
+}
 
+export async function convertDocToDocxWithPandoc(filePath: string): Promise<{ outputPath?: string; error?: string }> {
+  const pandoc = findPandoc()
+  if (!pandoc) {
+    return { error: '未找到 pandoc。请安装 pandoc 以支持 .doc 旧格式转换。' }
+  }
   const outputDir = tmpdir()
-  const baseName = basename(filePath).replace(/\.(docx|doc|pptx|xlsx|xls|odt)$/i, '')
-  const tempOutput = join(outputDir, `${baseName}.${targetFormat}`)
-
+  const baseName = basename(filePath).replace(/\.doc$/i, '')
+  const tempOutput = join(outputDir, `${baseName}.docx`)
   if (existsSync(tempOutput)) {
     try { unlinkSync(tempOutput) } catch {}
   }
-
   return new Promise((resolve) => {
-    const args = ['--headless', '--convert-to', targetFormat, '--outdir', outputDir, filePath]
-    const proc = spawn(soffice, args, {
-      env: { ...process.env, HOME: process.env.HOME || process.env.USERPROFILE || homedir() },
-      timeout: 120000,
+    const proc = spawn(pandoc, [filePath, '-o', tempOutput], {
+      env: process.env,
+      timeout: 60000,
     })
-
     let stderr = ''
     proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
-
     proc.on('close', (code) => {
       if (code === 0 && existsSync(tempOutput)) {
-        if (targetFormat === 'pdf') {
-          try {
-            const pdfBuffer = readFileSync(tempOutput)
-            const cachedPath = savePdfCache(filePath, pdfBuffer)
-            unlinkSync(tempOutput)
-            resolve({ pdfPath: cachedPath })
-          } catch (err: any) {
-            resolve({ error: `缓存保存失败: ${err.message}` })
-          }
-        } else {
-          resolve({ pdfPath: tempOutput })
-        }
+        resolve({ outputPath: tempOutput })
       } else {
-        resolve({ error: `LibreOffice 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
+        resolve({ error: `pandoc 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
       }
     })
-
     proc.on('error', (err) => {
-      resolve({ error: `LibreOffice 启动失败: ${err.message}` })
+      resolve({ error: `pandoc 启动失败: ${err.message}` })
+    })
+  })
+}
+
+export async function convertPptxToPdfWithPandoc(filePath: string): Promise<{ pdfPath?: string; error?: string }> {
+  const pandoc = findPandoc()
+  if (!pandoc) {
+    return { error: '未找到 pandoc。请安装 pandoc 以支持 PPTX 转 PDF。' }
+  }
+  const outputDir = tmpdir()
+  const baseName = basename(filePath).replace(/\.pptx$/i, '')
+  const tempOutput = join(outputDir, `${baseName}.pdf`)
+  if (existsSync(tempOutput)) {
+    try { unlinkSync(tempOutput) } catch {}
+  }
+  return new Promise((resolve) => {
+    const proc = spawn(pandoc, [filePath, '-o', tempOutput], {
+      env: process.env,
+      timeout: 60000,
+    })
+    let stderr = ''
+    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+    proc.on('close', (code) => {
+      if (code === 0 && existsSync(tempOutput)) {
+        try {
+          const pdfBuffer = readFileSync(tempOutput)
+          const cachedPath = savePdfCache(filePath, pdfBuffer)
+          unlinkSync(tempOutput)
+          resolve({ pdfPath: cachedPath })
+        } catch (err: any) {
+          resolve({ error: `缓存保存失败: ${err.message}` })
+        }
+      } else {
+        resolve({ error: `pandoc 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
+      }
+    })
+    proc.on('error', (err) => {
+      resolve({ error: `pandoc 启动失败: ${err.message}` })
     })
   })
 }
@@ -717,27 +753,6 @@ function undoDocxChange(filePath: string): { success: boolean; error?: string; v
   }
 }
 
-// ── Open with LibreOffice ──
-
-function openWithLibreOffice(filePath: string): { success: boolean; error?: string } {
-  const soffice = getEffectiveSoffice()
-  if (!soffice) {
-    return { success: false, error: '未找到 LibreOffice。请在"设置 → 文件支持 → Word"中配置。' }
-  }
-
-  try {
-    const proc = spawn(soffice, [filePath], {
-      detached: true,
-      stdio: 'ignore',
-      env: { PATH: process.env.PATH, HOME: process.env.HOME },
-    })
-    proc.unref()
-    return { success: true }
-  } catch (err: any) {
-    return { success: false, error: err.message || '启动 LibreOffice 失败' }
-  }
-}
-
 // ── External edit watcher ──
 
 const externalWatchers = new Map<string, { stop: () => void }>()
@@ -785,32 +800,9 @@ export function registerWordHandlers() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { ipcMain } = require('electron')
 
-  ipcMain.handle('word:convertToPdf', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
-    try {
-      const ext = filePath.split('.').pop()?.toLowerCase()
-      if (ext === 'docx') {
-        return convertWithSoffice(filePath, 'pdf')
-      }
-      if (ext === 'doc') {
-        const docxResult = await convertWithSoffice(filePath, 'docx')
-        if (docxResult.error || !docxResult.pdfPath) {
-          return { error: docxResult.error || '.doc 转换失败' }
-        }
-        // Convert the temporary docx to PDF
-        const pdfResult = await convertWithSoffice(docxResult.pdfPath!, 'pdf')
-        // Clean up temp docx
-        try { unlinkSync(docxResult.pdfPath!) } catch {}
-        return pdfResult
-      }
-      return { error: `不支持的 Word 格式: .${ext}` }
-    } catch (err: any) {
-      return { error: err.message || '转换失败' }
-    }
-  })
-
   ipcMain.handle('word:convertDocToDocx', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
-    const result = await convertWithSoffice(filePath, 'docx')
-    return { outputPath: result.pdfPath, error: result.error }
+    const result = await convertDocToDocxWithPandoc(filePath)
+    return { outputPath: result.outputPath, error: result.error }
   })
 
   ipcMain.handle('word:extractText', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
@@ -839,8 +831,8 @@ export function registerWordHandlers() {
     return analyzeDocxStructure(filePath)
   })
 
-  ipcMain.handle('word:openWithLibreOffice', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
-    return openWithLibreOffice(filePath)
+  ipcMain.handle('word:openExternally', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
+    return openWithSystemDefault(filePath)
   })
 
   ipcMain.handle('word:watchExternal', async (event: Electron.IpcMainInvokeEvent, filePath: string) => {
@@ -879,5 +871,13 @@ export function registerWordHandlers() {
 
   ipcMain.handle('word:undoChange', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
     return undoDocxChange(filePath)
+  })
+
+  ipcMain.handle('word:getPandocInfo', async () => {
+    return getPandocInfo()
+  })
+
+  ipcMain.handle('word:verifyPandoc', async (_event: Electron.IpcMainInvokeEvent, customPath: string) => {
+    return verifyPandocPath(customPath)
   })
 }

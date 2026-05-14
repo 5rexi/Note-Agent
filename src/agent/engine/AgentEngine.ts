@@ -185,14 +185,13 @@ export class AgentEngine {
     if (slashSkillPrompt) {
       baseSystemPrompt += `\n\n## Active Skill\n${slashSkillPrompt}`
     }
-    console.log('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
+    logger.info('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
 
-    // Boost maxRounds for research-phase tasks
-    let effectiveMaxRounds = this.opts.maxRounds
+    // Boost maxRounds for research-phase tasks (capped to prevent runaway loops)
+    let effectiveMaxRounds = this.opts.maxRounds ?? 20
     if (taskPlan?.phases?.some(p => p.mode === 'research')) {
-      const current = effectiveMaxRounds ?? 50
-      effectiveMaxRounds = Math.max(current, 80)
-      console.log('[AgentEngine] Research phase detected — boosting maxRounds to', effectiveMaxRounds)
+      effectiveMaxRounds = Math.max(effectiveMaxRounds, 30)
+      logger.info('[AgentEngine] Research phase detected — boosting maxRounds to', effectiveMaxRounds)
     }
 
     try {

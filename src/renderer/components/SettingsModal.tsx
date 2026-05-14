@@ -12,7 +12,8 @@ import { PRESET_PROVIDERS } from '../lib/providers'
 import { getProviderIconPath, getProviderDisplayName, getProviderColor } from '../lib/provider-icons'
 import ApiSetupModal from './ApiSetupModal'
 import LaTeXSupportCard from './LaTeXSupportCard'
-import WordSupportCard from './WordSupportCard'
+import PandocSupportCard from './PandocSupportCard'
+
 import { toast } from 'sonner'
 
 interface SettingsModalProps {
@@ -103,17 +104,10 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
   const [latexDownloadTaskId, setLatexDownloadTaskId] = useState<string | null>(null)
   const [latexDownloadProgress, setLatexDownloadProgress] = useState(0)
 
-  // Word support config
-  const [wordConfig, setWordConfig] = useState<{
-    enabled: boolean
-    sofficeType: 'system-auto' | 'system-manual' | 'bundled' | null
-    sofficePath: string
-    bundledPath: string
-  }>({
+  // Pandoc support config
+  const [pandocConfig, setPandocConfig] = useState<{ enabled: boolean; path: string | null }>({
     enabled: false,
-    sofficeType: null,
-    sofficePath: '',
-    bundledPath: '',
+    path: null,
   })
 
   // Brave Search API key
@@ -158,14 +152,14 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
   useEffect(() => {
     if (!open) return
     async function load() {
-      const [savedProviders, savedAppearance, savedDefault, savedGeneral, savedPresets, savedLatex, savedWord, savedBraveKey, savedFreeOnly, savedSearxng, savedBrowserDisabled, savedResearch] = await Promise.all([
+      const [savedProviders, savedAppearance, savedDefault, savedGeneral, savedPresets, savedLatex, savedPandoc, savedBraveKey, savedFreeOnly, savedSearxng, savedBrowserDisabled, savedResearch] = await Promise.all([
         window.electronAPI.getSetting('llmProviders'),
         window.electronAPI.getSetting('appearanceConfig'),
         window.electronAPI.getSetting('llmDefaultConfig'),
         window.electronAPI.getSetting('generalConfig'),
         window.electronAPI.getSetting('modelPresets'),
         window.electronAPI.getSetting('latexSupport'),
-        window.electronAPI.getSetting('wordSupport'),
+        window.electronAPI.getSetting('pandocSupport'),
         window.electronAPI.getSetting('braveSearchApiKey'),
         window.electronAPI.getSetting('webFreeOnly'),
         window.electronAPI.getSetting('searxngEndpoint'),
@@ -216,15 +210,10 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
         } catch {}
       }
 
-      if (savedWord) {
+      if (savedPandoc) {
         try {
-          const parsed = JSON.parse(savedWord)
-          setWordConfig({
-            enabled: parsed.enabled ?? false,
-            sofficeType: parsed.sofficeType ?? null,
-            sofficePath: parsed.sofficePath ?? '',
-            bundledPath: parsed.bundledPath ?? '',
-          })
+          const parsed = JSON.parse(savedPandoc)
+          setPandocConfig({ enabled: parsed.enabled ?? false, path: parsed.path ?? null })
         } catch {}
       }
 
@@ -256,7 +245,8 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
     await window.electronAPI.setSetting('generalConfig', JSON.stringify(generalConfig))
     await window.electronAPI.setSetting('modelPresets', JSON.stringify({ presets, activePresetId }))
     await window.electronAPI.setSetting('latexSupport', JSON.stringify(latexConfig))
-    await window.electronAPI.setSetting('wordSupport', JSON.stringify(wordConfig))
+    await window.electronAPI.setSetting('pandocSupport', JSON.stringify(pandocConfig))
+
     await window.electronAPI.setSetting('braveSearchApiKey', braveApiKey.trim())
     await window.electronAPI.setSetting('webFreeOnly', webFreeOnly ? 'true' : 'false')
     await window.electronAPI.setSetting('searxngEndpoint', searxngEndpoint.trim())
@@ -878,13 +868,14 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
                     window.electronAPI.setSetting('latexSupport', JSON.stringify(cfg))
                   }}
                 />
-                <WordSupportCard
-                  config={wordConfig}
+                <PandocSupportCard
+                  config={pandocConfig}
                   onChange={(cfg) => {
-                    setWordConfig(cfg)
-                    window.electronAPI.setSetting('wordSupport', JSON.stringify(cfg))
+                    setPandocConfig(cfg)
+                    window.electronAPI.setSetting('pandocSupport', JSON.stringify(cfg))
                   }}
                 />
+
               </div>
             )}
 

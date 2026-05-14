@@ -63,9 +63,6 @@ export interface ElectronAPI {
   wordCheckEnv: () => Promise<{ found: Array<{ name: string; path: string }>; bundled: string | null; error?: string }>
   wordVerifySoffice: (path: string) => Promise<{ ok: boolean; version?: string; error?: string }>
   wordGetBundledPath: () => Promise<{ path: string | null }>
-  wordRemoveBundled: () => Promise<{ success: boolean; error?: string }>
-  wordDownloadLibreOffice: () => Promise<{ taskId: string | null; error?: string }>
-  wordConvertToPdf: (path: string) => Promise<{ pdfPath?: string; error?: string }>
   wordExtractText: (path: string) => Promise<{ text?: string; markdown?: string; error?: string }>
   wordUnpack: (path: string, outputDir?: string) => Promise<{ success: boolean; error?: string; files: string[]; outputDir?: string }>
   wordPack: (inputDir: string, outputPath?: string) => Promise<{ success: boolean; error?: string }>
@@ -73,9 +70,14 @@ export interface ElectronAPI {
   wordCreateFromMarkdown: (payload: { outputPath: string; title?: string; content: string }) => Promise<{ success: boolean; path?: string; error?: string }>
   wordAnalyzeStructure: (path: string) => Promise<{ items: Array<{ type: string; summary: string; fullText: string; style?: string; lineStart: number; lineEnd: number }>; error?: string }>
   wordConvertToIndexedHtml: (path: string) => Promise<{ html: string; error?: string }>
-  wordOpenWithLibreOffice: (path: string) => Promise<{ success: boolean; error?: string }>
+  wordOpenExternally: (path: string) => Promise<{ success: boolean; error?: string }>
   wordWatchExternal: (path: string) => Promise<{ success: boolean }>
   wordUnwatchExternal: (path: string) => Promise<{ success: boolean }>
+  wordGetPandocInfo: () => Promise<{ installed: boolean; path: string | null; version: string | null }>
+  wordVerifyPandoc: (path: string) => Promise<{ ok: boolean; version: string | null; error?: string }>
+  pandocDownload: () => Promise<{ taskId: string | null; error?: string }>
+  pandocGetBundledPath: () => Promise<{ path: string | null }>
+  pandocRemoveBundled: () => Promise<{ success: boolean; error?: string }>
   onWordExternalChanged: (callback: (filePath: string) => void) => () => void
   wordReplaceParagraph: (path: string, paragraphIndex: number, newText: string) => Promise<{ success: boolean; error?: string }>
   wordAddParagraph: (path: string, paragraphIndex: number, text: string) => Promise<{ success: boolean; error?: string }>
@@ -263,9 +265,6 @@ const api: ElectronAPI = {
   wordCheckEnv: () => ipcRenderer.invoke('word:checkEnv'),
   wordVerifySoffice: (path) => ipcRenderer.invoke('word:verifySoffice', path),
   wordGetBundledPath: () => ipcRenderer.invoke('word:getBundledPath'),
-  wordRemoveBundled: () => ipcRenderer.invoke('word:removeBundled'),
-  wordDownloadLibreOffice: () => ipcRenderer.invoke('word:downloadLibreOffice'),
-  wordConvertToPdf: (path) => ipcRenderer.invoke('word:convertToPdf', path),
   wordExtractText: (path) => ipcRenderer.invoke('word:extractText', path),
   wordUnpack: (path, outputDir) => ipcRenderer.invoke('word:unpack', path, outputDir),
   wordPack: (inputDir, outputPath) => ipcRenderer.invoke('word:pack', inputDir, outputPath),
@@ -273,9 +272,14 @@ const api: ElectronAPI = {
   wordCreateFromMarkdown: (payload) => ipcRenderer.invoke('word:createFromMarkdown', payload),
   wordAnalyzeStructure: (path) => ipcRenderer.invoke('word:analyzeStructure', path),
   wordConvertToIndexedHtml: (path) => ipcRenderer.invoke('word:convertToIndexedHtml', path),
-  wordOpenWithLibreOffice: (path) => ipcRenderer.invoke('word:openWithLibreOffice', path),
+  wordOpenExternally: (path) => ipcRenderer.invoke('word:openExternally', path),
   wordWatchExternal: (path) => ipcRenderer.invoke('word:watchExternal', path),
   wordUnwatchExternal: (path) => ipcRenderer.invoke('word:unwatchExternal', path),
+  wordGetPandocInfo: () => ipcRenderer.invoke('word:getPandocInfo'),
+  wordVerifyPandoc: (path) => ipcRenderer.invoke('word:verifyPandoc', path),
+  pandocDownload: () => ipcRenderer.invoke('pandoc:download'),
+  pandocGetBundledPath: () => ipcRenderer.invoke('pandoc:getBundledPath'),
+  pandocRemoveBundled: () => ipcRenderer.invoke('pandoc:removeBundled'),
   onWordExternalChanged: (callback) => {
     const handler = (_e: any, filePath: string) => callback(filePath)
     ipcRenderer.on('word:external-changed', handler)
