@@ -1,0 +1,230 @@
+import { z } from 'zod'
+import type { Tool, ToolContext } from '../Tool'
+import type { ToolResult } from '../../types'
+import { openDocx, saveDocx, closeDocx, resolvePath } from '../../document'
+
+const inputSchema = z.object({
+  filePath: z.string().describe('Absolute path to the .docx file'),
+  parentPath: z.string().describe('Parent element path where the new element will be inserted, e.g. /body or /body/p[1]'),
+  type: z.enum(['paragraph', 'run', 'table', 'tableRow', 'tableCell', 'text']).describe('Type of element to add'),
+  index: z.number().optional().describe('1-based index to insert at within parent (default: append at end)'),
+  props: z.record(z.any()).optional().describe(
+    'Properties for the new element. Examples:\n' +
+    '  { text: "Hello" } for paragraph/run\n' +
+    '  { text: "Hello", bold: true, color: "FF0000" } for run\n' +
+    '  { alignment: "center", headingLevel: 2 } for paragraph'
+  ),
+})
+
+type Input = z.infer<typeof inputSchema>
+
+export const WordAddTool: Tool<Input, { filePath: string; parentPath: string; type: string }> = {
+  name: 'wordAdd',
+  description:
+    'Add a new element to a Word document at a specific parent path. ' +
+    'Use wordQuery to find the correct parent path first. ' +
+    'For adding a paragraph at the end of the document, use parentPath="/body".',
+  inputSchema,
+
+  isReadOnly() { return false },
+  isConcurrencySafe() { return false },
+  isDestructive() { return true },
+
+  checkPermissions(input, ctx) {
+    if (ctx.mode === 'ask') {
+      return { result: 'ask', description: `Add ${input.type} to ${input.parentPath} in ${input.filePath}` }
+    }
+    if (ctx.mode === 'explore') {
+      return { result: 'deny', reason: 'Explore mode does not allow modifying Word documents' }
+    }
+    return { result: 'allow' }
+  },
+
+  validateInput(raw) {
+    return inputSchema.parse(raw)
+  },
+
+  async call(input, ctx: ToolContext): Promise<ToolResult<{ filePath: string; parentPath: string; type: string }>> {
+    const { doc, error } = await openDocx(input.filePath, ctx.workspacePath)
+    if (error || !doc) {
+      return {
+        data: { filePath: input.filePath, parentPath: input.parentPath, type: input.type },
+        error: error!.message,
+      }
+    }
+
+    try {
+      const resolved = resolvePath(doc, input.parentPath)
+      if (resolved.error || !resolved.element) {
+        return {
+          data: { filePath: input.filePath, parentPath: input.parentPath, type: input.type },
+          error: resolved.error
+            ? `[${resolved.error.code}] ${resolved.error.message}${resolved.error.suggestion ? '\nSuggestion: ' + resolved.error.suggestion : ''}`
+            : `Parent not found at ${input.parentPath}`,
+        }
+      }
+
+      const parent = resolved.element
+      const docEl = doc.document
+      const props = input.props || {}
+      const insertIndex = input.index !== undefined ? Math.max(0, input.index - 1) : -1
+
+      let newEl: Element
+
+      switch (input.type) {
+        case 'paragraph': {
+          newEl = docEl.createElement('w:p')
+          const pPr = docEl.createElement('w:pPr')
+          if (props.alignment) {
+            const jc = docEl.createElement('w:jc')
+            jc.setAttribute('w:val', String(props.alignment))
+            pPr.appendChild(jc)
+          }
+          if (props.headingLevel) {
+            const level = Math.max(1, Math.min(6, Number(props.headingLevel)))
+            const style = docEl.createElement('w:pStyle')
+            style.setAttribute('w:val', `Heading${level}`)
+            pPr.appendChild(style)
+          }
+          if (props.style) {
+            const style = docEl.createElement('w:pStyle')
+            style.setAttribute('w:val', String(props.style))
+            pPr.appendChild(style)
+          }
+          if (pPr.childNodes.length > 0) newEl.appendChild(pPr)
+
+          if (props.text !== undefined) {
+            const run = docEl.createElement('w:r')
+            const t = docEl.createElement('w:t')
+            t.textContent = String(props.text)
+            if (/^\s+|\s+$/.test(String(props.text))) {
+              t.setAttribute('xml:space', 'preserve')
+            }
+            run.appendChild(t)
+            newEl.appendChild(run)
+          }
+          break
+        }
+
+        case 'run': {
+          newEl = docEl.createElement('w:r')
+          const rPr = docEl.createElement('w:rPr')
+          if (props.bold) {
+            const b = docEl.createElement('w:b')
+            b.setAttribute('w:val', '1')
+            rPr.appendChild(b)
+          }
+          if (props.italic) {
+            const i = docEl.createElement('w:i')
+            i.setAttribute('w:val', '1')
+            rPr.appendChild(i)
+          }
+          if (props.fontSize) {
+            const sz = docEl.createElement('w:sz')
+            sz.setAttribute('w:val', String(props.fontSize))
+            rPr.appendChild(sz)
+          }
+          if (props.color) {
+            const color = docEl.createElement('w:color')
+            color.setAttribute('w:val', String(props.color).replace(/^#/, ''))
+            rPr.appendChild(color)
+          }
+          if (rPr.childNodes.length > 0) newEl.appendChild(rPr)
+
+          const t = docEl.createElement('w:t')
+          t.textContent = String(props.text ?? '')
+          if (/^\s+|\s+$/.test(String(props.text ?? ''))) {
+            t.setAttribute('xml:space', 'preserve')
+          }
+          newEl.appendChild(t)
+          break
+        }
+
+        case 'table': {
+          newEl = docEl.createElement('w:tbl')
+          const tblPr = docEl.createElement('w:tblPr')
+          const tblW = docEl.createElement('w:tblW')
+          tblW.setAttribute('w:w', '5000')
+          tblW.setAttribute('w:type', 'pct')
+          tblPr.appendChild(tblW)
+          newEl.appendChild(tblPr)
+          break
+        }
+
+        case 'tableRow': {
+          newEl = docEl.createElement('w:tr')
+          break
+        }
+
+        case 'tableCell': {
+          newEl = docEl.createElement('w:tc')
+          const p = docEl.createElement('w:p')
+          if (props.text !== undefined) {
+            const run = docEl.createElement('w:r')
+            const t = docEl.createElement('w:t')
+            t.textContent = String(props.text)
+            run.appendChild(t)
+            p.appendChild(run)
+          }
+          newEl.appendChild(p)
+          break
+        }
+
+        case 'text': {
+          // Adding text means adding a run to the parent paragraph
+          newEl = docEl.createElement('w:r')
+          const t = docEl.createElement('w:t')
+          t.textContent = String(props.text ?? '')
+          if (/^\s+|\s+$/.test(String(props.text ?? ''))) {
+            t.setAttribute('xml:space', 'preserve')
+          }
+          newEl.appendChild(t)
+          break
+        }
+
+        default:
+          return {
+            data: { filePath: input.filePath, parentPath: input.parentPath, type: input.type },
+            error: `Unsupported element type: ${input.type}`,
+          }
+      }
+
+      // Insert at specified index or append
+      if (insertIndex >= 0 && insertIndex < parent.childNodes.length) {
+        let elementIndex = 0
+        for (let i = 0; i < parent.childNodes.length; i++) {
+          const child = parent.childNodes[i]
+          if (child.nodeType === 1) {
+            if (elementIndex === insertIndex) {
+              parent.insertBefore(newEl, child)
+              break
+            }
+            elementIndex++
+          }
+        }
+      } else {
+        parent.appendChild(newEl)
+      }
+
+      doc.isDirty = true
+      const saveResult = await saveDocx(doc)
+      if (!saveResult.success) {
+        return {
+          data: { filePath: input.filePath, parentPath: input.parentPath, type: input.type },
+          error: saveResult.error?.message || 'Failed to save document',
+        }
+      }
+
+      return {
+        data: { filePath: input.filePath, parentPath: input.parentPath, type: input.type },
+        preview: `Added ${input.type} to ${input.parentPath}`,
+      }
+    } finally {
+      closeDocx(doc)
+    }
+  },
+
+  renderToolUse(input) {
+    return `wordAdd ${input.filePath} ${input.parentPath} --type ${input.type}`
+  },
+}

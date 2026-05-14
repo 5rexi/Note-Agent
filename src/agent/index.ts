@@ -54,6 +54,13 @@ export { ReplaceWordParagraphTool } from './tools/impl/replaceWordParagraph'
 export { AddWordParagraphTool } from './tools/impl/addWordParagraph'
 export { DeleteWordParagraphTool } from './tools/impl/deleteWordParagraph'
 export { ModifyWordFormatTool } from './tools/impl/modifyWordFormat'
+export { WordViewTool } from './tools/impl/wordView'
+export { WordGetTool } from './tools/impl/wordGet'
+export { WordSetTool } from './tools/impl/wordSet'
+export { WordAddTool } from './tools/impl/wordAdd'
+export { WordRemoveTool } from './tools/impl/wordRemove'
+export { WordQueryTool } from './tools/impl/wordQuery'
+export { WordRawTool } from './tools/impl/wordRaw'
 export { DoneTool } from './tools/impl/done'
 
 // Subsystems

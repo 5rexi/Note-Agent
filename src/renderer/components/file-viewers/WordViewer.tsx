@@ -495,11 +495,13 @@ export default function WordViewer({ filePath }: WordViewerProps) {
           {/* Main rendering container — ALWAYS mounted */}
           <div
             ref={containerRef}
-            className="p-8 max-w-[900px] mx-auto"
+            className="py-8 px-4"
             style={{
               background: isDark ? '#141414' : '#fff',
               color: isDark ? '#d0d0d0' : 'inherit',
               minHeight: '100%',
+              display: 'table',
+              minWidth: '100%',
             }}
             onMouseUp={() => {
               if (editingParagraph !== null) return
