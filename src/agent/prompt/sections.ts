@@ -55,7 +55,8 @@ export function taskRulesSection(): SystemPromptSection {
 - Do NOT add features or refactoring beyond what was requested.
 - Do NOT add error handling for impossible scenarios.
 - Do NOT create helper functions for one-off operations.
-- Before claiming a task is complete, verify that it actually works.`,
+- Before claiming a task is complete, verify that it actually works.
+- NEVER write placeholder, test, or temporary files (e.g., names containing "test", "temp", "tmp", "placeholder", "draft", "nul"). Write the FINAL content directly.`,
     priority: 93,
     cacheable: true,
   }

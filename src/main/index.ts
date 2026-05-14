@@ -9,7 +9,8 @@ import { registerReportHandlers } from './report'
 import { registerLatexHandlers, registerOfficeHandlers } from './latex-office'
 import { registerLatexSetupHandlers } from './latex-setup'
 import { registerWordHandlers } from './word-office'
-import { registerWordSetupHandlers } from './word-setup'
+import { registerPandocSetupHandlers } from './pandoc-setup'
+// word-setup.ts removed — LibreOffice no longer required
 import { registerPdfCacheHandlers } from './pdf-cache'
 import { setMainWindow } from './file-notify'
 import { taskManager } from '../agent'
@@ -107,7 +108,7 @@ app.whenReady().then(() => {
   registerLatexHandlers()
   registerOfficeHandlers()
   registerWordHandlers()
-  registerWordSetupHandlers()
+  // registerWordSetupHandlers() removed — LibreOffice no longer required
   registerLatexSetupHandlers()
   registerPdfCacheHandlers()
   registerBrowserHost()

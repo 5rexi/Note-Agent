@@ -51,6 +51,9 @@ export function estimateMessageTokens(messages: Message[]): number {
       total += estimateTokens(content)
     } else if (msg.role === 'assistant') {
       total += estimateTokens(msg.content)
+      if (msg.reasoningContent) {
+        total += estimateTokens(msg.reasoningContent)
+      }
       if (msg.toolCalls) {
         total += estimateTokens(JSON.stringify(msg.toolCalls))
       }
@@ -113,6 +116,17 @@ export function microcompact(messages: Message[], keepRecentRounds: number = DEF
           ...msg,
           result: `[Compacted: ${msg.toolName} → ${resultStr.length} chars]`,
         })
+      } else if (msg.role === 'assistant' && !isRecent) {
+        // Strip reasoning content from old assistant messages — it accumulates
+        // rapidly and is not needed for future rounds
+        if (msg.reasoningContent) {
+          result.push({
+            ...msg,
+            reasoningContent: `[Compacted: ${msg.reasoningContent.length} chars of reasoning]`,
+          })
+        } else {
+          result.push(msg)
+        }
       } else {
         result.push(msg)
       }
@@ -168,7 +182,7 @@ export async function llmCompact(
   const oldRounds = rounds.slice(0, totalRounds - keepRecentRounds)
   const recentRounds = rounds.slice(totalRounds - keepRecentRounds)
 
-  // Build conversation text for old rounds
+  // Build conversation text for old rounds (exclude reasoning content)
   const oldConversation = oldRounds
     .flat()
     .map((m) => {
@@ -176,7 +190,12 @@ export async function llmCompact(
         const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
         return `User: ${content}`
       } else if (m.role === 'assistant') {
-        return `Assistant: ${m.content}`
+        // Only include actual content + tool calls, never reasoning
+        let text = m.content || ''
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          text += ` [tool_calls: ${m.toolCalls.map(tc => tc.name).join(', ')}]`
+        }
+        return `Assistant: ${text}`
       } else if (m.role === 'tool') {
         return `Tool(${m.toolName}): ${JSON.stringify(m.result)}`
       } else {

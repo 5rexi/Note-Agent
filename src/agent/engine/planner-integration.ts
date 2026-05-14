@@ -25,6 +25,7 @@ import {
 } from '../planner/TaskPlanner'
 import { loadSkills, formatSkillsContext } from '../skills/loader'
 import type { MinimalPromptContext } from '../prompt/minimal'
+import { logger } from '../logger'
 import {
   shouldInjectDocxSkill,
   DOCX_SKILL_SUMMARY,
@@ -65,18 +66,18 @@ export async function prepareSession(input: PrepareSessionInput): Promise<Prepar
   clearPlan(sid)
   await TodoWriteTool.call({ action: 'clear' }, toolContext)
 
-  console.log('[AgentEngine] Analyzing task:', text.slice(0, 100))
+  logger.info('[AgentEngine] Analyzing task:', text.slice(0, 100))
   const taskPlan = await analyzeTask(text, openFiles, llmConfig, sid)
-  console.log(
+  logger.info(
     '[AgentEngine] Plan result:',
     taskPlan ? { strategy: taskPlan.strategy, steps: taskPlan.steps.length, skills: taskPlan.skills } : 'null',
   )
 
   if (taskPlan && taskPlan.strategy !== 'direct') {
-    console.log('[AgentEngine] Creating todo list for', taskPlan.strategy, 'strategy')
+    logger.info('[AgentEngine] Creating todo list for', taskPlan.strategy, 'strategy')
     await createTaskPlanTodos(taskPlan, toolContext)
   } else {
-    console.log('[AgentEngine] Direct strategy — no todo list')
+    logger.info('[AgentEngine] Direct strategy — no todo list')
   }
 
   const persistedPlan = loadPlan(sid)
@@ -140,7 +141,7 @@ This task includes a research phase. You should:
   }
   const builtInSkills = builtInSkillsParts.length > 0 ? builtInSkillsParts.join('\n\n') : undefined
 
-  console.log('[AgentEngine] Skills injected:', {
+  logger.info('[AgentEngine] Skills injected:', {
     needsDocx,
     needsPptx,
     builtInSkillsLength: builtInSkills?.length || 0,

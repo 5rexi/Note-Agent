@@ -308,3 +308,23 @@ body {
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
 }
+
+/* ── Docx Preview Paper Effect ── */
+.docx-viewer-wrapper {
+  background: var(--na-bg-app);
+  padding: 24px 16px;
+}
+
+.docx-viewer-section {
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+
+.dark .docx-viewer-wrapper {
+  background: var(--na-bg-app);
+}
+
+.dark .docx-viewer-section {
+  background: #1a1a1a;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
