@@ -306,10 +306,30 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
                 if (!pendingTools[idx]) pendingTools[idx] = { args: '' }
                 if (tc.id) pendingTools[idx].id = tc.id
                 if (tc.function?.name) pendingTools[idx].name = tc.function.name
-                if (typeof tc.function?.arguments === 'string' && tc.function.arguments) {
-                  pendingTools[idx].args += tc.function.arguments
+
+                // Some providers (e.g. Kimi Code) may send arguments as a pre-parsed
+                // object instead of a JSON string. Handle both shapes.
+                const args = tc.function?.arguments
+                if (typeof args === 'string' && args) {
+                  pendingTools[idx].args += args
+                } else if (args && typeof args === 'object') {
+                  try {
+                    pendingTools[idx].args += JSON.stringify(args)
+                  } catch {
+                    console.warn(`[OpenAIClient] Failed to stringify tool arguments object for ${tc.function?.name}`)
+                  }
                 }
               }
+              // Debug log for provider-specific tool_call quirks
+              const toolDebug = delta.tool_calls.map((tc: any) => ({
+                id: tc?.id,
+                name: tc?.function?.name,
+                argType: typeof tc?.function?.arguments,
+                argPreview: typeof tc?.function?.arguments === 'string'
+                  ? tc.function.arguments.slice(0, 40)
+                  : JSON.stringify(tc?.function?.arguments).slice(0, 40),
+              }))
+              console.log(`[OpenAIClient] tool_calls delta: ${JSON.stringify(toolDebug)}`)
             }
 
             if (parsed.usage) {
@@ -328,9 +348,11 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
             // instead of 'tool_calls'. Detect pending tools in either case.
             const hasPendingTools = Object.values(pendingTools).some((pt) => pt.id && pt.name)
             if (finish === 'tool_calls' || finish === 'function_call' || (finish === 'stop' && hasPendingTools)) {
+              console.log(`[OpenAIClient] finish_reason=${finish}, flushing ${Object.keys(pendingTools).length} pending tool(s)`)
               yield* flushPendingTools()
               yield { type: 'done' }
             } else if (finish === 'stop') {
+              console.log(`[OpenAIClient] finish_reason=stop, no pending tools`)
               yield { type: 'done' }
             }
           } catch (parseErr: any) {

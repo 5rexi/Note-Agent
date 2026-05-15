@@ -46,6 +46,7 @@ ${modeRule}
 - Do NOT ask questions in text. ALWAYS use askUserQuestion tool to communicate questions to the user.
 - If stuck or unclear, use askUserQuestion.
 - When the task is FULLY COMPLETE, call the \`done\` tool to end the session. Do NOT read extra files "just to verify" or "just to be thorough" after finishing.
+- CRITICAL: Never emit a response with zero tool calls while the task remains unfinished. The system interprets text-only responses as stalled and will abort the task.
 - File paths are relative to: ${ctx.workspacePath}`)
 
   // ── Section 3: Context (~100-200 tokens) ──
