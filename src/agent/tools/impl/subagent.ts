@@ -19,10 +19,11 @@ const inputSchema = z.object({
 
 type Input = z.infer<typeof inputSchema>
 
-// Default LLM config for sub-agent (will be overridden by parent's config)
+// Default LLM config for sub-agent (will be overridden by parent's config).
+// Intentionally empty so that missing initialization is caught early.
 let parentLLMConfig: LLMConfig = {
-  provider: 'openai',
-  model: 'gpt-4o-mini',
+  provider: '',
+  model: '',
   apiKey: '',
 }
 

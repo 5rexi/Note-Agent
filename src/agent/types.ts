@@ -82,6 +82,8 @@ export interface LLMConfig {
   baseUrl?: string
   maxTokens?: number
   temperature?: number
+  /** Model-specific context window in tokens (optional, used for safety checks) */
+  contextWindow?: number
 }
 
 // ── Session / Context ──

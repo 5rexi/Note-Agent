@@ -13,7 +13,7 @@ import type { Tool, ToolContext } from '../tools/Tool'
 import type { LLMClient, LLMStreamEvent } from '../llm/client'
 import { createLLMClient } from '../llm/client'
 import type { PermissionContext } from '../tools/permissions'
-import { type CompactConfig, estimateMessageTokens } from '../compact'
+import { type CompactConfig, estimateMessageTokens, microcompact } from '../compact'
 import { runTools } from './tool-executor'
 import { maybeCompactMessages } from './context-compactor'
 import { zodToJsonSchema } from './schema-conversion'
@@ -118,6 +118,28 @@ export async function* executeRound(
       { role: 'system', content: mergedSystemPrompt },
       ...nonSystemMessages,
     ]
+
+    // Safety check: ensure we don't exceed the model's context window.
+    const inputTokens = estimateMessageTokens(apiMessages)
+    const outputBudget = roundConfig.maxTokens || 8192
+    const contextWindow = roundConfig.contextWindow || 128_000
+    if (inputTokens + outputBudget > contextWindow * 0.95) {
+      logger.warn(`[RoundExecutor] Context window safety check failed: ${inputTokens} input + ${outputBudget} output > ${Math.floor(contextWindow * 0.95)} threshold (window: ${contextWindow}). Triggering emergency compaction.`)
+      // Try aggressive micro-compaction with fewer kept rounds as a last resort.
+      const emergencyCompacted = microcompact(apiMessages, 2)
+      const compactedTokens = estimateMessageTokens(emergencyCompacted)
+      if (compactedTokens + outputBudget <= contextWindow * 0.95) {
+        apiMessages.length = 0
+        apiMessages.push(...emergencyCompacted)
+        logger.info(`[RoundExecutor] Emergency compaction succeeded: ${inputTokens} -> ${compactedTokens} tokens`)
+      } else {
+        yield {
+          type: 'error',
+          message: `Context too large for this model (${contextWindow} tokens). Even after compaction, estimated ${compactedTokens} input + ${outputBudget} output tokens exceed the safe limit. Please start a new session or use a model with a larger context window.`,
+        }
+        return
+      }
+    }
 
     // Call LLM
     if (!client) {
@@ -261,6 +283,18 @@ export async function* executeRound(
     const hasAskQuestion = toolResults.some((tr) => tr.toolName === 'askUserQuestion')
 
     logger.info(`[RoundExecutor] Tool results: ${toolResults.length} tools executed`)
+
+    // Detect redundant tool calls in recent history to prevent infinite loops.
+    const duplicateWarnings: string[] = []
+    for (const tr of toolResults) {
+      const originalCall = roundToolCalls.find((tc) => tc.id === tr.toolCallId)
+      if (originalCall && isDuplicateToolCall(originalCall, messages)) {
+        const warning = `WARNING: You already called '${tr.toolName}' with the same arguments recently and received a result. Calling it again is redundant and wastes tokens. If the previous result was unclear, try a different approach.`
+        duplicateWarnings.push(warning)
+        logger.info(`[RoundExecutor] Duplicate tool call detected: ${tr.toolName}`)
+      }
+    }
+
     for (const tr of toolResults) {
       const resultSummary = typeof tr.result === 'string' ? tr.result.slice(0, 100) : JSON.stringify(tr.result).slice(0, 100)
       logger.info(`[RoundExecutor]   - ${tr.toolName}: ${resultSummary}${resultSummary.length >= 100 ? '...' : ''}`)
@@ -291,6 +325,14 @@ export async function* executeRound(
         name: tr.toolName,
         result: tr.result,
       }
+    }
+
+    // Inject duplicate warnings as a system message so the LLM sees them before the next round.
+    if (duplicateWarnings.length > 0) {
+      messages.push({
+        role: 'system',
+        content: duplicateWarnings.join('\n'),
+      })
     }
 
     if (hasAskQuestion) {
@@ -334,5 +376,25 @@ export async function* executeRound(
       }
     }
   }
+}
+
+/** Check whether a tool call with the same name + arguments was recently executed. */
+function isDuplicateToolCall(toolCall: ToolCall, messages: Message[]): boolean {
+  // Look back through recent assistant messages and their tool calls.
+  // Only check the last 10 rounds to avoid false positives from distant history.
+  let roundsChecked = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role === 'assistant') {
+      roundsChecked++
+      if (roundsChecked > 10) break
+      for (const tc of msg.toolCalls || []) {
+        if (tc.name === toolCall.name && JSON.stringify(tc.input) === JSON.stringify(toolCall.input)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
 }
 

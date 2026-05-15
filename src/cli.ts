@@ -370,7 +370,8 @@ async function main(): Promise<void> {
       tools,
       maxRounds: config.maxRounds,
       modelRouter: router,
-      autoCompact: true,
+      autoCompact: config.memory.autoCompact,
+      compactConfig: { threshold: config.memory.compactThreshold },
     })
     console.log(`[Multi-Model] Primary: ${config.model} | Secondary: ${secondaryModel.model}`)
   } else {
@@ -387,7 +388,8 @@ async function main(): Promise<void> {
       mode: config.mode,
       tools,
       maxRounds: config.maxRounds,
-      autoCompact: true,
+      autoCompact: config.memory.autoCompact,
+      compactConfig: { threshold: config.memory.compactThreshold },
     })
   }
 

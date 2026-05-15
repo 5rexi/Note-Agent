@@ -77,6 +77,9 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
         max_tokens: config.maxTokens || 8192,
         stream: true,
       }
+      if (config.temperature != null) {
+        body.temperature = config.temperature
+      }
       if (systemMsg) body.system = systemMsg.content
       if (tools.length > 0) {
         body.tools = tools.map((t) => ({
@@ -133,6 +136,10 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
         reader.cancel('Stream timeout').catch(() => {})
       }, MAX_STREAM_DURATION_MS)
 
+      // Accumulate input_json_delta for tool_use blocks across stream chunks.
+      let pendingTool: { id: string; name: string; inputJson: string } | null = null
+      let usage: { inputTokens: number; outputTokens: number } | undefined
+
       while (true) {
         const { done, value } = await reader.read()
         if (done) {
@@ -162,22 +169,58 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
               if (delta.type === 'thinking_delta') {
                 yield { type: 'reasoning', reasoning: delta.thinking }
               }
-              // input_json_delta is accumulated by the caller via tool_use events.
+              if (delta.type === 'input_json_delta') {
+                if (pendingTool) {
+                  pendingTool.inputJson += delta.partial_json || ''
+                }
+              }
             }
 
             if (type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
-              yield {
-                type: 'tool_use',
-                toolCall: {
-                  id: parsed.content_block.id,
-                  name: parsed.content_block.name,
-                  input: parsed.content_block.input || {},
-                },
+              pendingTool = {
+                id: parsed.content_block.id,
+                name: parsed.content_block.name,
+                inputJson: '',
+              }
+              // Some simple tools may have a fully populated input object at start.
+              if (parsed.content_block.input && typeof parsed.content_block.input === 'object') {
+                pendingTool.inputJson = JSON.stringify(parsed.content_block.input)
+              }
+            }
+
+            if (type === 'content_block_stop') {
+              if (pendingTool) {
+                let input: any = {}
+                try {
+                  if (pendingTool.inputJson.trim()) {
+                    input = JSON.parse(pendingTool.inputJson)
+                  }
+                } catch {
+                  console.warn(`[AnthropicClient] Failed to parse tool input JSON for ${pendingTool.name}, falling back to {}`)
+                }
+                yield {
+                  type: 'tool_use',
+                  toolCall: {
+                    id: pendingTool.id,
+                    name: pendingTool.name,
+                    input,
+                  },
+                }
+                pendingTool = null
+              }
+            }
+
+            if (type === 'message_delta') {
+              if (parsed.usage) {
+                usage = {
+                  inputTokens: parsed.usage.input_tokens || 0,
+                  outputTokens: parsed.usage.output_tokens || 0,
+                }
               }
             }
 
             if (type === 'message_stop') {
-              yield { type: 'done' }
+              yield { type: 'done', usage }
             }
           } catch {
             // Skip malformed SSE lines
@@ -185,8 +228,29 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
         }
       }
 
-      yield { type: 'done' }
-      if (streamTimeout) clearTimeout(streamTimeout)
+      // Flush any pending tool if the stream ended without content_block_stop.
+      if (pendingTool) {
+        let input: any = {}
+        try {
+          if (pendingTool.inputJson.trim()) {
+            input = JSON.parse(pendingTool.inputJson)
+          }
+        } catch {
+          console.warn(`[AnthropicClient] Failed to parse tool input JSON for ${pendingTool.name} at stream end, falling back to {}`)
+        }
+        yield {
+          type: 'tool_use',
+          toolCall: {
+            id: pendingTool.id,
+            name: pendingTool.name,
+            input,
+          },
+        }
+        pendingTool = null
+      }
+
+      yield { type: 'done', usage }
+      if (streamTimeout) clearStreamTimeout()
     },
   }
 }

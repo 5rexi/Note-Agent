@@ -251,6 +251,7 @@ export class ModelRouter {
       baseUrl: profile.baseUrl,
       maxTokens: profile.defaultMaxTokens,
       temperature: profile.temperature,
+      contextWindow: profile.contextWindow,
     }
   }
 }

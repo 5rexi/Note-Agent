@@ -24,45 +24,45 @@ export async function runTools(
   onEvent?: (event: AgentEvent) => void,
   llmConfig?: LLMConfig,
 ): Promise<ToolRunResult[]> {
-  const safe: { tc: ToolCall; tool: Tool }[] = []
-  const unsafe: { tc: ToolCall; tool: Tool }[] = []
+  const safe: { index: number; tc: ToolCall; tool: Tool }[] = []
+  const unsafe: { index: number; tc: ToolCall; tool: Tool }[] = []
 
-  for (const tc of toolCalls) {
+  for (let i = 0; i < toolCalls.length; i++) {
+    const tc = toolCalls[i]
     const tool = tools.find((t) => t.name === tc.name || t.aliases?.includes(tc.name))
     if (!tool) {
-      unsafe.push({ tc, tool: null as any })
+      unsafe.push({ index: i, tc, tool: null as any })
       continue
     }
     if (tool.isConcurrencySafe()) {
-      safe.push({ tc, tool })
+      safe.push({ index: i, tc, tool })
     } else {
-      unsafe.push({ tc, tool })
+      unsafe.push({ index: i, tc, tool })
     }
   }
 
-  const results: ToolRunResult[] = []
+  // Pre-allocate results so order matches toolCalls regardless of execution order.
+  const results: ToolRunResult[] = new Array(toolCalls.length)
 
-  const safePromises = safe.map(async ({ tc, tool }) => {
+  const safePromises = safe.map(async ({ index, tc, tool }) => {
     const toolCtx: ToolContext = {
       ...ctx,
       ...(onEvent ? { reportEvent: onEvent } : {}),
       parentToolCallId: tc.id,
       ...(llmConfig ? { llmConfig } : {}),
     }
-    const result = await executeSingleTool(tc, tool, toolCtx, permCtx)
-    results.push(result)
+    results[index] = await executeSingleTool(tc, tool, toolCtx, permCtx)
   })
   await Promise.all(safePromises)
 
-  for (const { tc, tool } of unsafe) {
+  for (const { index, tc, tool } of unsafe) {
     const toolCtx: ToolContext = {
       ...ctx,
       ...(onEvent ? { reportEvent: onEvent } : {}),
       parentToolCallId: tc.id,
       ...(llmConfig ? { llmConfig } : {}),
     }
-    const result = await executeSingleTool(tc, tool, toolCtx, permCtx)
-    results.push(result)
+    results[index] = await executeSingleTool(tc, tool, toolCtx, permCtx)
   }
 
   return results

@@ -479,6 +479,21 @@ function getOrCreateSessionState(
       // fall back to default
     }
 
+    // Read compact threshold from settings (default 80_000 to align with compact.ts).
+    let compactThreshold = 80_000
+    try {
+      const db = getDb()
+      const raw = db?.getSetting('compactThreshold')
+      if (raw) {
+        const parsed = parseInt(String(raw), 10)
+        if (Number.isFinite(parsed) && parsed > 0) {
+          compactThreshold = parsed
+        }
+      }
+    } catch {
+      // fall back to default
+    }
+
     const engine = new AgentEngine({
       llmConfig: config,
       mode,
@@ -488,6 +503,7 @@ function getOrCreateSessionState(
       maxRounds,
       modelRouter,
       dataSources,
+      compactConfig: { threshold: compactThreshold },
     })
     engine.setSessionId(sessionId)
 

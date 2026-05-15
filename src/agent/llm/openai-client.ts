@@ -79,6 +79,9 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
         stream: true,
         max_tokens: config.maxTokens || 8192,
       }
+      if (config.temperature != null) {
+        body.temperature = config.temperature
+      }
       if (tools.length > 0) {
         body.tools = tools.map((t) => ({
           type: 'function',

@@ -10,7 +10,21 @@ import type { ContentPart } from '../types'
 
 /** Crude vision capability detection by model name fragment. */
 export function supportsVision(model: string): boolean {
-  const visionModels = ['gpt-4o', 'claude-sonnet-4', 'claude-opus-4', 'claude-haiku-4', 'gemini', 'qwen-vl']
+  const visionModels = [
+    'gpt-4o',
+    'gpt-4-turbo',
+    'claude-sonnet-4',
+    'claude-opus-4',
+    'claude-haiku-4',
+    'claude-3',
+    'gemini',
+    'qwen-vl',
+    'kimi-k2',
+    'glm-5.1',
+    'glm-5',
+    'glm-4.7',
+    'glm-4v',
+  ]
   const lower = model.toLowerCase()
   return visionModels.some((v) => lower.includes(v))
 }
