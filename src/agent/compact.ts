@@ -119,7 +119,7 @@ export function microcompact(messages: Message[], keepRecentRounds: number = DEF
       } else if (msg.role === 'assistant' && !isRecent) {
         // Strip reasoning content from old assistant messages — it accumulates
         // rapidly and is not needed for future rounds
-        if (msg.reasoningContent) {
+        if (typeof msg.reasoningContent === 'string' && msg.reasoningContent) {
           result.push({
             ...msg,
             reasoningContent: `[Compacted: ${msg.reasoningContent.length} chars of reasoning]`,

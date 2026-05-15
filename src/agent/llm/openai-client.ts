@@ -255,7 +255,8 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
             const delta = parsed.choices?.[0]?.delta
             if (!delta) continue
 
-            if (delta.content) {
+            // Defensive: delta.content may be null, undefined, or a non-string in some APIs.
+            if (typeof delta.content === 'string' && delta.content) {
               let chunk = delta.content
               while (chunk.length > 0) {
                 if (thinkState === 'none') {
@@ -291,17 +292,20 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
               }
             }
 
-            if (delta.reasoning_content) {
+            if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
               yield { type: 'reasoning', reasoning: delta.reasoning_content }
             }
 
             if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
               for (const tc of delta.tool_calls) {
+                if (!tc || typeof tc !== 'object') continue
                 const idx = tc.index ?? 0
                 if (!pendingTools[idx]) pendingTools[idx] = { args: '' }
                 if (tc.id) pendingTools[idx].id = tc.id
                 if (tc.function?.name) pendingTools[idx].name = tc.function.name
-                if (tc.function?.arguments) pendingTools[idx].args += tc.function.arguments
+                if (typeof tc.function?.arguments === 'string' && tc.function.arguments) {
+                  pendingTools[idx].args += tc.function.arguments
+                }
               }
             }
 
@@ -326,8 +330,14 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
             } else if (finish === 'stop') {
               yield { type: 'done' }
             }
-          } catch {
-            // Skip invalid JSON lines
+          } catch (parseErr: any) {
+            // Log unexpected parse errors so we can diagnose provider-specific quirks.
+            // Invalid JSON is common and harmless; other errors need investigation.
+            if (parseErr?.message?.includes('JSON')) {
+              // Skip invalid JSON lines silently
+            } else {
+              console.error(`[OpenAIClient] Stream chunk error: ${parseErr?.message}. Chunk: ${data.slice(0, 200)}`)
+            }
           }
         }
       }

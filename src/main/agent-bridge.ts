@@ -753,14 +753,16 @@ export function registerAgentBridge() {
 
         return { success: true }
       } catch (err: any) {
-        console.error('[AgentBridge] submit error:', err)
+        const stack = err?.stack || ''
+        console.error('[AgentBridge] submit error:', err?.message || 'Unknown error', '\n' + stack)
+        const errorMessage = err?.message || 'Unknown error'
         if (!window.isDestroyed()) {
           window.webContents.send('agent:event', sessionId, {
             type: 'error',
-            message: err.message || 'Unknown error',
+            message: errorMessage,
           })
         }
-        return { success: false, error: err.message }
+        return { success: false, error: errorMessage }
       } finally {
         state.running = false
         state.senderId = undefined

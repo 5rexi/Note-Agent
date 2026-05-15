@@ -30,9 +30,10 @@ function getToolResultsDir(): string {
  */
 function resultStringLength(result: ToolResult): number {
   try {
-    return JSON.stringify(result.data).length
+    const serialized = JSON.stringify(result.data)
+    return serialized ? serialized.length : 0
   } catch {
-    return String(result.data).length
+    return result.data !== undefined ? String(result.data).length : 0
   }
 }
 
