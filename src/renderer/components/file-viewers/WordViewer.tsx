@@ -1,15 +1,13 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAtomValue } from 'jotai'
-import { Loader2, FileText, Eye, FileType, AlertCircle, Code, RefreshCw, List, ExternalLink, Quote, Undo, Columns } from 'lucide-react'
+import { Loader2, FileText, AlertCircle, RefreshCw, List, ExternalLink, Quote, Undo } from 'lucide-react'
 import { toast } from 'sonner'
+import { renderAsync } from 'docx-preview'
 import { themeAtom } from '../../atoms'
-
 
 interface WordViewerProps {
   filePath: string
 }
-
-type ViewMode = 'html' | 'pdf' | 'split'
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binaryString = atob(base64)
@@ -23,16 +21,8 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 export default function WordViewer({ filePath }: WordViewerProps) {
   const theme = useAtomValue(themeAtom)
   const isDark = theme === 'dark'
-  const [wordEnabled, setWordEnabled] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('html')
-  const [html, setHtml] = useState<string | null>(null)
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
-  const [htmlLoading, setHtmlLoading] = useState(false)
-  const [pdfLoading, setPdfLoading] = useState(false)
-  const [htmlError, setHtmlError] = useState<string | null>(null)
-  const [pdfError, setPdfError] = useState<string | null>(null)
-  const [isUnpacking, setIsUnpacking] = useState(false)
-  const [cachedHit, setCachedHit] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showStructure, setShowStructure] = useState(false)
   const [structureItems, setStructureItems] = useState<Array<{ type: string; summary: string; style?: string; lineStart: number; lineEnd: number }>>([])
   const [structureLoading, setStructureLoading] = useState(false)
@@ -45,50 +35,103 @@ export default function WordViewer({ filePath }: WordViewerProps) {
   const isSavingRef = useRef(false)
   const isDoc = filePath.toLowerCase().endsWith('.doc')
   const structureRef = useRef<HTMLDivElement>(null)
-  const htmlContainerRef = useRef<HTMLDivElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const styleContainerRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
 
-  // Load wordEnabled state
-  useEffect(() => {
-    window.electronAPI.getSetting('wordSupport').then((raw) => {
-      if (raw) {
-        try {
-          const config = JSON.parse(raw)
-          setWordEnabled(config.enabled === true)
-        } catch {
-          setWordEnabled(false)
-        }
-      } else {
-        setWordEnabled(false)
-      }
-    })
+  /** Return the current scrollTop of the scrollable parent container. */
+  const getScrollTop = useCallback((): number | undefined => {
+    const scrollContainer = containerRef.current?.parentElement
+    if (!scrollContainer) return undefined
+    return scrollContainer.scrollTop
   }, [])
 
-  // When wordEnabled loads, set default view mode
-  useEffect(() => {
-    setViewMode(wordEnabled ? 'pdf' : 'html')
-  }, [wordEnabled])
+  /**
+   * Load and render the Word document using docx-preview.
+   * .doc files are auto-converted to .docx before rendering.
+   * After renderAsync resolves, data-p-index is injected into all <p> tags
+   * to support paragraph-level editing.
+   * If restoreScrollTop is provided, restore that exact scroll position after rendering.
+   */
+  const loadDocument = useCallback(async (restoreScrollTop?: number, showLoading = true) => {
+    if (!containerRef.current) return
+    if (showLoading) setIsLoading(true)
+    setError(null)
 
-  // Load preview based on filePath + viewMode — single source of truth
-  useEffect(() => {
-    if (viewMode === 'html') {
-      loadHtmlPreview()
-    } else if (viewMode === 'pdf') {
-      loadPdfPreview()
-    } else if (viewMode === 'split') {
-      loadHtmlPreview()
-      if (wordEnabled) loadPdfPreview()
+    let targetPath = filePath
+
+    try {
+      if (isDoc) {
+        const convertResult = await window.electronAPI.wordConvertDocToDocx(filePath)
+        if (convertResult.error || !convertResult.outputPath) {
+          throw new Error(convertResult.error || '.doc 转换失败')
+        }
+        targetPath = convertResult.outputPath
+      }
+
+      const base64Result = await window.electronAPI.readFileBase64(targetPath)
+      if (base64Result.error) {
+        throw new Error(base64Result.error)
+      }
+
+      const buffer = base64ToArrayBuffer(base64Result.data)
+      containerRef.current.innerHTML = ''
+
+      await renderAsync(buffer, containerRef.current, styleContainerRef.current || undefined, {
+        className: 'docx-viewer',
+        inWrapper: true,
+        breakPages: true,
+        renderHeaders: true,
+        renderFooters: true,
+        renderFootnotes: true,
+        renderEndnotes: true,
+        useBase64URL: true,
+      })
+
+      // Inject data-p-index into all <p> tags inside <article> for paragraph editing.
+      // We scope to <article> to avoid header/footer/footnote paragraphs which live
+      // outside the body content and would skew the index mapping.
+      if (containerRef.current) {
+        let globalIdx = 0
+        const allParagraphs = containerRef.current.querySelectorAll('article p')
+        allParagraphs.forEach((p) => {
+          p.setAttribute('data-p-index', String(globalIdx++))
+        })
+      }
+
+      // Restore exact scroll position after re-rendering.
+      // Use requestAnimationFrame so the DOM has fully settled after renderAsync.
+      if (restoreScrollTop !== undefined && containerRef.current) {
+        requestAnimationFrame(() => {
+          const scrollContainer = containerRef.current?.parentElement
+          if (scrollContainer) {
+            scrollContainer.scrollTop = restoreScrollTop
+          }
+        })
+      }
+
+      if (showLoading) setIsLoading(false)
+    } catch (err: any) {
+      setError(err.message || '加载失败')
+      if (showLoading) setIsLoading(false)
     }
+  }, [filePath, isDoc])
+
+  // Trigger document load when filePath changes
+  useEffect(() => {
+    loadDocument()
+  }, [loadDocument])
+
+  // Cleanup rendered content on unmount
+  useEffect(() => {
     return () => {
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl)
-        setPdfUrl(null)
+      if (containerRef.current) {
+        containerRef.current.innerHTML = ''
       }
     }
-  }, [filePath, viewMode])
+  }, [])
 
-  // Close context menu on outside click
+  // Close context menu when clicking outside
   useEffect(() => {
     if (!contextMenu?.visible) return
     const handler = (e: MouseEvent) => {
@@ -101,102 +144,9 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     return () => document.removeEventListener('mousedown', handler)
   }, [contextMenu])
 
-  // The HTML from wordConvertToIndexedHtml already has correct data-p-index
-  const processedHtml = useMemo(() => {
-    if (!html) return null
-    if (isDark) {
-      // Replace default light-mode colors with dark-mode equivalents,
-      // while preserving any document-specific colors (e.g. blue links, red marks).
-      return html
-        .replace(/color:\s*#333;?/g, 'color: #d0d0d0;')
-        .replace(/color:\s*#1a1a1a;?/g, 'color: #f0f0f0;')
-        .replace(/border:\s*1px\s+solid\s+#ddd;?/g, 'border: 1px solid #555;')
-    }
-    return html
-  }, [html, isDark])
-
-  // Load HTML preview — use backend document.xml parser for 100% index sync
-  const loadHtmlPreview = useCallback(() => {
-    setHtmlLoading(true)
-    setHtmlError(null)
-    setHtml(null)
-    setCachedHit(false)
-
-    window.electronAPI.wordConvertToIndexedHtml(filePath)
-      .then((result) => {
-        if (result.error) {
-          setHtmlError(result.error)
-          setHtmlLoading(false)
-          return
-        }
-        setHtml(result.html || '')
-        setHtmlError(null)
-        setHtmlLoading(false)
-      })
-      .catch((err) => {
-        setHtmlError(err.message || '转换失败')
-        setHtmlLoading(false)
-      })
-  }, [filePath])
-
-  // Load PDF preview (soffice conversion with cache)
-  const loadPdfPreview = useCallback(async (forceRefresh = false) => {
-    setPdfLoading(true)
-    setPdfError(null)
-    setPdfUrl(null)
-    setCachedHit(false)
-
-    try {
-      if (!forceRefresh) {
-        const cacheResult = await window.electronAPI.pdfGetCachedPath(filePath)
-        if (cacheResult.isFresh && cacheResult.pdfPath) {
-          setCachedHit(true)
-          const base64Result = await window.electronAPI.readFileBase64(cacheResult.pdfPath)
-          if (!base64Result.error) {
-            const buffer = base64ToArrayBuffer(base64Result.data)
-            const blob = new Blob([buffer], { type: 'application/pdf' })
-            setPdfUrl(URL.createObjectURL(blob))
-            setPdfError(null)
-            setPdfLoading(false)
-            return
-          }
-        }
-      } else {
-        // Force refresh: invalidate cache first
-        await window.electronAPI.pdfInvalidateCache(filePath)
-      }
-
-      const result = await window.electronAPI.wordConvertToPdf(filePath)
-      if (result.error || !result.pdfPath) {
-        setPdfError(result.error || 'PDF 转换失败')
-        setPdfUrl(null)
-        setPdfLoading(false)
-        return
-      }
-
-      const base64Result = await window.electronAPI.readFileBase64(result.pdfPath)
-      if (base64Result.error) {
-        setPdfError(base64Result.error)
-        setPdfUrl(null)
-        setPdfLoading(false)
-        return
-      }
-
-      const buffer = base64ToArrayBuffer(base64Result.data)
-      const blob = new Blob([buffer], { type: 'application/pdf' })
-      setPdfUrl(URL.createObjectURL(blob))
-      setPdfError(null)
-      setPdfLoading(false)
-    } catch (e: any) {
-      setPdfError(e.message || 'PDF 加载失败')
-      setPdfUrl(null)
-      setPdfLoading(false)
-    }
-  }, [filePath])
-
-  // Double-click to edit paragraph
+  // Double-click to edit a paragraph
   useEffect(() => {
-    const container = htmlContainerRef.current
+    const container = containerRef.current
     if (!container) return
 
     const handleDblClick = (e: MouseEvent) => {
@@ -212,7 +162,6 @@ export default function WordViewer({ filePath }: WordViewerProps) {
       paragraphEl.style.outline = '2px solid var(--na-accent)'
       paragraphEl.style.background = isDark ? 'rgba(59,130,246,0.1)' : 'rgba(59,130,246,0.05)'
       paragraphEl.focus()
-      // Select all text
       const range = document.createRange()
       range.selectNodeContents(paragraphEl)
       const sel = window.getSelection()
@@ -222,12 +171,12 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
     container.addEventListener('dblclick', handleDblClick)
     return () => container.removeEventListener('dblclick', handleDblClick)
-  }, [editingParagraph, processedHtml, isDark, viewMode])
+  }, [editingParagraph, isDark])
 
-  // Handle edit save/cancel
+  // Handle paragraph edit save (blur) and cancel (Escape)
   useEffect(() => {
     if (editingParagraph === null) return
-    const container = htmlContainerRef.current
+    const container = containerRef.current
     if (!container) return
     const el = container.querySelector(`[data-p-index="${editingParagraph}"]`) as HTMLElement | null
     if (!el) return
@@ -241,31 +190,47 @@ export default function WordViewer({ filePath }: WordViewerProps) {
       el.style.outline = ''
       el.style.background = ''
 
+      // Skip if text hasn't actually changed
+      if (newText === originalText) {
+        isSavingRef.current = false
+        return
+      }
+
       isSavingRef.current = true
       window.dispatchEvent(new CustomEvent('word-viewer:save-status', { detail: { status: 'saving' } }))
-      window.electronAPI.wordReplaceParagraph(filePath, editingParagraph + 1, newText)
+      window.electronAPI.wordReplaceParagraph(filePath, editingParagraph, newText)
         .then((result) => {
           if (result.success) {
-            // Instead of reloading the entire HTML (which causes flicker and scroll jump),
-            // directly update the edited paragraph's text in the DOM.
-            const container = htmlContainerRef.current
+            // Update the paragraph text in-place without re-rendering the whole
+            // document (avoids flash).  We keep the first <span> child which
+            // carries the font-size / font-family styles, and discard any extra
+            // siblings so the text doesn't get duplicated.
+            const container = containerRef.current
             if (container) {
               const pEl = container.querySelector(`[data-p-index="${editingParagraph}"]`)
               if (pEl) {
-                pEl.textContent = newText
+                const firstSpan = pEl.querySelector('span')
+                if (firstSpan) {
+                  firstSpan.textContent = newText
+                  // Remove all other direct children
+                  Array.from(pEl.children).forEach((child) => {
+                    if (child !== firstSpan) {
+                      pEl.removeChild(child)
+                    }
+                  })
+                } else {
+                  pEl.textContent = newText
+                }
               }
             }
             window.dispatchEvent(new CustomEvent('word-viewer:save-status', { detail: { status: 'saved' } }))
-            // Keep isSavingRef true for 3s to cover the file watcher poll interval (2s).
-            // This prevents the watcher from triggering loadHtmlPreview after the file is modified.
             setTimeout(() => {
               isSavingRef.current = false
               window.dispatchEvent(new CustomEvent('word-viewer:save-status', { detail: { status: 'idle' } }))
             }, 3000)
           } else {
             isSavingRef.current = false
-            // Only reload on failure to restore original content
-            loadHtmlPreview()
+            loadDocument(getScrollTop())
             window.dispatchEvent(new CustomEvent('word-viewer:save-status', { detail: { status: 'error' } }))
             setTimeout(() => {
               window.dispatchEvent(new CustomEvent('word-viewer:save-status', { detail: { status: 'idle' } }))
@@ -302,17 +267,15 @@ export default function WordViewer({ filePath }: WordViewerProps) {
       el.removeEventListener('blur', handleBlur)
       el.removeEventListener('keydown', handleKeyDown)
     }
-  }, [editingParagraph, filePath, loadHtmlPreview, viewMode])
+  }, [editingParagraph, filePath, loadDocument])
 
-  // Clear selection when clicking outside the HTML container AND outside the toolbar
+  // Clear text selection when clicking outside the container (and outside the floating toolbar)
   useEffect(() => {
-    if (viewMode !== 'html' || !processedHtml) return
-    const container = htmlContainerRef.current
+    const container = containerRef.current
     if (!container) return
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as Node
       const toolbar = toolbarRef.current
-      // Don't clear if clicking inside the floating toolbar
       if (toolbar && toolbar.contains(target)) return
       if (!container.contains(target)) {
         setSelectedText('')
@@ -322,30 +285,20 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     }
     document.addEventListener('mousedown', handleMouseDown)
     return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [viewMode, processedHtml])
+  }, [])
 
-  // Watch external edits (LibreOffice + agent tools + fs:undoWrite)
+  // Watch external edits (system default editor, agent tools, fs:undoWrite)
   useEffect(() => {
     if (!filePath) return
     window.electronAPI.wordWatchExternal(filePath)
     const unsubWord = window.electronAPI.onWordExternalChanged((changedPath) => {
       if (changedPath === filePath && !isSavingRef.current) {
-        if (viewMode === 'pdf' || viewMode === 'split') {
-          loadPdfPreview(true)
-        }
-        if (viewMode === 'html' || viewMode === 'split') {
-          loadHtmlPreview()
-        }
+        loadDocument(getScrollTop())
       }
     })
     const unsubFs = window.electronAPI.onFileChanged((event) => {
       if (event.path === filePath && !isSavingRef.current) {
-        if (viewMode === 'pdf' || viewMode === 'split') {
-          loadPdfPreview(true)
-        }
-        if (viewMode === 'html' || viewMode === 'split') {
-          loadHtmlPreview()
-        }
+        loadDocument(getScrollTop())
       }
     })
     return () => {
@@ -353,9 +306,9 @@ export default function WordViewer({ filePath }: WordViewerProps) {
       unsubFs()
       window.electronAPI.wordUnwatchExternal(filePath)
     }
-  }, [filePath, viewMode, loadHtmlPreview, loadPdfPreview])
+  }, [filePath, loadDocument])
 
-  // Check undo availability (multi-step undo via SQLite)
+  // Poll undo availability (multi-step undo via SQLite)
   useEffect(() => {
     if (!filePath) return
     const checkUndo = () => {
@@ -374,11 +327,10 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     const handler = async (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault()
-        const result = await window.electronAPI.wordUndoChange(filePath)
+        const result = await window.electronAPI.undoWriteFile(filePath)
         if (result.success) {
           toast.success('已撤销')
-          if (viewMode === 'html') loadHtmlPreview()
-          else loadPdfPreview(true)
+          loadDocument(getScrollTop())
           const countRes = await window.electronAPI.getUndoCount(filePath)
           setCanUndo(countRes.count > 0)
         } else {
@@ -388,9 +340,9 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [filePath, canUndo, viewMode, loadHtmlPreview, loadPdfPreview])
+  }, [filePath, canUndo, loadDocument])
 
-  // Load structure when panel opens
+  // Load document structure when panel opens
   useEffect(() => {
     if (!showStructure || structureItems.length > 0) return
     setStructureLoading(true)
@@ -432,6 +384,9 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
   return (
     <div className="flex flex-col h-full w-full" style={{ background: 'var(--na-bg-panel)' }}>
+      {/* Hidden style container for docx-preview injected styles */}
+      <div ref={styleContainerRef} style={{ display: 'none' }} />
+
       {/* Toolbar */}
       <div
         className="flex items-center justify-between px-3 shrink-0"
@@ -454,31 +409,16 @@ export default function WordViewer({ filePath }: WordViewerProps) {
               .doc 旧格式
             </span>
           )}
-          {cachedHit && (
-            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}>
-              缓存
-            </span>
-          )}
-          {!wordEnabled && (
-            <span
-              className="ml-2 px-1.5 py-0.5 text-[10px] rounded flex items-center gap-1"
-              style={{ background: 'rgba(245,158,11,0.1)', color: '#d97706' }}
-            >
-              <AlertCircle className="w-2.5 h-2.5" />
-              Word 支持未启用，使用快速预览
-            </span>
-          )}
         </div>
 
         <div className="flex items-center gap-1">
           {canUndo && (
             <button
               onClick={async () => {
-                const result = await window.electronAPI.wordUndoChange(filePath)
+                const result = await window.electronAPI.undoWriteFile(filePath)
                 if (result.success) {
                   toast.success('已撤销')
-                  if (viewMode === 'html') loadHtmlPreview()
-                  else loadPdfPreview(true)
+                  loadDocument(getScrollTop())
                   const countRes = await window.electronAPI.getUndoCount(filePath)
                   setCanUndo(countRes.count > 0)
                 } else {
@@ -493,63 +433,34 @@ export default function WordViewer({ filePath }: WordViewerProps) {
               撤销
             </button>
           )}
-          {wordEnabled && (
-            <button
-              onClick={async () => {
-                const result = await window.electronAPI.wordOpenWithLibreOffice(filePath)
-                if (!result.success) {
-                  toast.error(result.error || '启动 LibreOffice 失败')
-                }
-              }}
-              className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
-              style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}
-              title="用 LibreOffice Writer 编辑"
-            >
-              <ExternalLink className="w-3 h-3" />
-              LO 编辑
-            </button>
-          )}
           <button
-            onClick={() => setViewMode('html')}
+            onClick={() => window.electronAPI.wordOpenExternally(filePath)}
             className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
-            style={viewMode === 'html' ? activeBtnStyle : inactiveBtnStyle}
-            title="HTML 预览（快速，保留可编辑性）"
+            style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}
+            title="用系统默认程序打开"
           >
-            <FileType className="w-3 h-3" />
-            HTML
+            <ExternalLink className="w-3 h-3" />
+            打开
           </button>
           <button
-            onClick={() => setViewMode('pdf')}
-            disabled={!wordEnabled}
+            onClick={() => setShowStructure((s) => !s)}
             className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
-            style={viewMode === 'pdf' ? activeBtnStyle : { ...inactiveBtnStyle, opacity: wordEnabled ? 1 : 0.4 }}
-            title={wordEnabled ? 'PDF 预览（准确，保留原始排版）' : '需要启用 Word 支持'}
+            style={showStructure ? activeBtnStyle : inactiveBtnStyle}
+            title="文档结构"
           >
-            <Eye className="w-3 h-3" />
-            PDF
+            <List className="w-3 h-3" />
+            结构
           </button>
           <button
-            onClick={() => setViewMode('split')}
-            disabled={!wordEnabled}
+            onClick={() => loadDocument(getScrollTop())}
+            disabled={isLoading}
             className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
-            style={viewMode === 'split' ? activeBtnStyle : { ...inactiveBtnStyle, opacity: wordEnabled ? 1 : 0.4 }}
-            title={wordEnabled ? 'Split 预览（HTML + PDF 并排）' : '需要启用 Word 支持'}
+            style={{ background: 'var(--na-bg-panel)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}
+            title="刷新预览"
           >
-            <Columns className="w-3 h-3" />
-            Split
+            {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            刷新
           </button>
-          {wordEnabled && (viewMode === 'pdf' || viewMode === 'split') && (
-            <button
-              onClick={() => loadPdfPreview(true)}
-              disabled={pdfLoading}
-              className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors"
-              style={{ background: 'var(--na-bg-panel)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}
-              title="强制重新生成 PDF"
-            >
-              {pdfLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              刷新
-            </button>
-          )}
         </div>
       </div>
 
@@ -580,8 +491,6 @@ export default function WordViewer({ filePath }: WordViewerProps) {
             <button
               key={idx}
               onClick={async () => {
-                // Open document.xml and jump to line
-                setIsUnpacking(true)
                 try {
                   const result = await window.electronAPI.wordUnpack(filePath)
                   if (result.success && result.outputDir) {
@@ -592,7 +501,6 @@ export default function WordViewer({ filePath }: WordViewerProps) {
                     window.dispatchEvent(new CustomEvent('file-tree:open-absolute', {
                       detail: docXmlPath
                     }))
-                    // Wait for editor to open then jump to line
                     setTimeout(() => {
                       window.dispatchEvent(new CustomEvent('word:jump-to-line', {
                         detail: { line: item.lineStart, endLine: item.lineEnd }
@@ -600,9 +508,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
                     }, 300)
                   }
                 } catch (e: any) {
-                  toast.error(e.message || '解压失败')
-                } finally {
-                  setIsUnpacking(false)
+                  setError(e.message || '解压失败')
                 }
               }}
               className="w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80 transition-colors"
@@ -626,366 +532,170 @@ export default function WordViewer({ filePath }: WordViewerProps) {
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {/* HTML Preview */}
-        {viewMode === 'html' && (
-          <div className="h-full overflow-auto">
-            {htmlLoading && (
-              <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
-                <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                <span className="text-sm">加载文档...</span>
-              </div>
-            )}
-            {htmlError && !htmlLoading && (
-              <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-status-explore)' }}>
-                <span className="text-sm">加载失败: {htmlError}</span>
-              </div>
-            )}
-            {processedHtml && (
-              <div
-                ref={htmlContainerRef}
-                className="py-8 px-4"
-                style={{
-                  background: isDark ? '#141414' : '#fff',
-                  color: isDark ? '#d0d0d0' : 'inherit',
-                  minHeight: '100%',
-                  display: 'table',
-                  minWidth: '100%',
-                }}
-                dangerouslySetInnerHTML={{ __html: processedHtml }}
-                onMouseUp={() => {
-                  if (editingParagraph !== null) return
-                  setTimeout(() => {
-                    const sel = window.getSelection()
-                    if (!sel || sel.rangeCount === 0) {
-                      setSelectedText('')
-                      setToolbarPos(null)
-                      setSelectedParagraphs(null)
-                      return
-                    }
-                    const text = sel.toString().trim()
-                    if (!text || text.length === 0) {
-                      setSelectedText('')
-                      setToolbarPos(null)
-                      setSelectedParagraphs(null)
-                      return
-                    }
-                    const range = sel.getRangeAt(0)
-                    const container = htmlContainerRef.current
-                    const inContainer = container ? container.contains(range.commonAncestorContainer) : false
-                    if (!container || !inContainer) {
-                      setSelectedText('')
-                      setToolbarPos(null)
-                      setSelectedParagraphs(null)
-                      return
-                    }
-                    // Pre-compute paragraph indices while selection is still alive
-                    let startNode: Node | null = range.startContainer
-                    let endNode: Node | null = range.endContainer
-                    if (startNode.nodeType === Node.TEXT_NODE) startNode = startNode.parentElement
-                    if (endNode.nodeType === Node.TEXT_NODE) endNode = endNode.parentElement
-                    const startEl = (startNode as Element | null)?.closest('[data-p-index]')
-                    const endEl = (endNode as Element | null)?.closest('[data-p-index]')
-                    const startIdx = startEl ? parseInt(startEl.getAttribute('data-p-index') || '-1', 10) : -1
-                    const endIdx = endEl ? parseInt(endEl.getAttribute('data-p-index') || '-1', 10) : startIdx
-                    setSelectedText(text)
-                    setSelectedParagraphs(startIdx >= 0 ? { startIdx, endIdx: Math.max(startIdx, endIdx) } : null)
-                    const rect = range.getBoundingClientRect()
-                    setToolbarPos({ x: rect.left + rect.width / 2, y: rect.top - 8 })
-                  }, 10)
-                }}
-                onMouseDown={() => {
+      {/* Content area */}
+      <div className="flex-1 overflow-hidden relative">
+        <div className="h-full overflow-auto">
+          {/* Main rendering container — ALWAYS mounted */}
+          <div
+            ref={containerRef}
+            className="p-8 max-w-[900px] mx-auto"
+            style={{
+              background: isDark ? '#141414' : '#fff',
+              color: isDark ? '#d0d0d0' : 'inherit',
+              minHeight: '100%',
+            }}
+            onMouseUp={() => {
+              if (editingParagraph !== null) return
+              setTimeout(() => {
+                const sel = window.getSelection()
+                if (!sel || sel.rangeCount === 0) {
                   setSelectedText('')
                   setToolbarPos(null)
                   setSelectedParagraphs(null)
+                  return
+                }
+                const text = sel.toString().trim()
+                if (!text || text.length === 0) {
+                  setSelectedText('')
+                  setToolbarPos(null)
+                  setSelectedParagraphs(null)
+                  return
+                }
+                const range = sel.getRangeAt(0)
+                const container = containerRef.current
+                const inContainer = container ? container.contains(range.commonAncestorContainer) : false
+                if (!container || !inContainer) {
+                  setSelectedText('')
+                  setToolbarPos(null)
+                  setSelectedParagraphs(null)
+                  return
+                }
+                let startNode: Node | null = range.startContainer
+                let endNode: Node | null = range.endContainer
+                if (startNode.nodeType === Node.TEXT_NODE) startNode = startNode.parentElement
+                if (endNode.nodeType === Node.TEXT_NODE) endNode = endNode.parentElement
+                const startEl = (startNode as Element | null)?.closest('[data-p-index]')
+                const endEl = (endNode as Element | null)?.closest('[data-p-index]')
+                const startIdx = startEl ? parseInt(startEl.getAttribute('data-p-index') || '-1', 10) : -1
+                const endIdx = endEl ? parseInt(endEl.getAttribute('data-p-index') || '-1', 10) : startIdx
+                setSelectedText(text)
+                setSelectedParagraphs(startIdx >= 0 ? { startIdx, endIdx: Math.max(startIdx, endIdx) } : null)
+                const rect = range.getBoundingClientRect()
+                setToolbarPos({ x: rect.left + rect.width / 2, y: rect.top - 8 })
+              }, 10)
+            }}
+            onMouseDown={() => {
+              setSelectedText('')
+              setToolbarPos(null)
+              setSelectedParagraphs(null)
+              setContextMenu(null)
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setContextMenu({ x: e.clientX, y: e.clientY, visible: true })
+            }}
+          />
+        </div>
+
+        {/* Loading overlay */}
+        {isLoading && (
+          <div
+            className="absolute inset-0 flex items-center justify-center z-10"
+            style={{ background: 'var(--na-bg-panel)' }}
+          >
+            <Loader2 className="w-5 h-5 animate-spin mr-2" style={{ color: 'var(--na-text-tertiary)' }} />
+            <span className="text-sm" style={{ color: 'var(--na-text-tertiary)' }}>加载文档...</span>
+          </div>
+        )}
+
+        {/* Error overlay */}
+        {error && !isLoading && (
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
+            style={{ background: 'var(--na-bg-panel)' }}
+          >
+            <div className="flex items-center gap-2" style={{ color: 'var(--na-status-explore)' }}>
+              <AlertCircle className="w-4 h-4" />
+              <span className="text-sm">{error}</span>
+            </div>
+            <button
+              onClick={() => loadDocument(getScrollTop())}
+              className="flex items-center gap-1 px-3 py-1 text-[11px] rounded transition-colors"
+              style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}
+            >
+              <RefreshCw className="w-3 h-3" />
+              重试
+            </button>
+          </div>
+        )}
+
+        {/* Context menu */}
+        {contextMenu?.visible && (
+          <div
+            className="fixed z-[200] flex flex-col gap-0.5 py-1 rounded-md shadow-lg word-context-menu"
+            style={{
+              left: contextMenu.x,
+              top: contextMenu.y,
+              background: 'var(--na-bg-popover)',
+              border: '1px solid var(--na-border-subtle)',
+              minWidth: 160,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {selectedText && selectedParagraphs && (
+              <button
+                onClick={async () => {
+                  try {
+                    const structure = await window.electronAPI.wordAnalyzeStructure(filePath)
+                    if (structure.error || !structure.items) {
+                      toast.error(structure.error || '解析文档失败')
+                      setContextMenu(null)
+                      return
+                    }
+                    const paragraphs = []
+                    const { startIdx, endIdx } = selectedParagraphs
+                    for (let i = startIdx; i <= Math.max(startIdx, endIdx); i++) {
+                      const item = structure.items[i]
+                      if (item && item.fullText.trim() !== '') {
+                        paragraphs.push({ index: (item as any).index ?? i, text: item.fullText, style: item.style, lineStart: item.lineStart, lineEnd: item.lineEnd })
+                      }
+                    }
+                    window.dispatchEvent(new CustomEvent('word:text-selected', {
+                      detail: { filePath, fileName: filePath.split('/').pop() || filePath, selectedText, paragraphs },
+                    }))
+                    toast.success('已引用到对话')
+                  } catch (e: any) {
+                    toast.error('引用失败: ' + e.message)
+                  }
                   setContextMenu(null)
                 }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setContextMenu({ x: e.clientX, y: e.clientY, visible: true })
-                }}
-              />
-            )}
-            {/* Floating toolbar for text selection */}
-            {/* Context menu for HTML preview */}
-            {contextMenu?.visible && (
-              <div
-                className="fixed z-[200] flex flex-col gap-0.5 py-1 rounded-md shadow-lg"
-                style={{
-                  left: contextMenu.x,
-                  top: contextMenu.y,
-                  background: 'var(--na-bg-popover)',
-                  border: '1px solid var(--na-border-subtle)',
-                  minWidth: 160,
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
+                style={{ color: 'var(--na-text-secondary)' }}
               >
-                {selectedText && selectedParagraphs && (
-                  <button
-                    onClick={async () => {
-                      try {
-                        const structure = await window.electronAPI.wordAnalyzeStructure(filePath)
-                        if (structure.error || !structure.items) {
-                          toast.error(structure.error || '解析文档失败')
-                          setContextMenu(null)
-                          return
-                        }
-                        const paragraphs = []
-                        const { startIdx, endIdx } = selectedParagraphs
-                        for (let i = startIdx; i <= Math.max(startIdx, endIdx); i++) {
-                          const item = structure.items[i]
-                          if (item && item.fullText.trim() !== '') {
-                            paragraphs.push({ index: (item as any).index ?? i, text: item.fullText, style: item.style, lineStart: item.lineStart, lineEnd: item.lineEnd })
-                          }
-                        }
-                        window.dispatchEvent(new CustomEvent('word:text-selected', {
-                          detail: { filePath, fileName: filePath.split('/').pop() || filePath, selectedText, paragraphs },
-                        }))
-                        toast.success('已引用到对话')
-                      } catch (e: any) {
-                        toast.error('引用失败: ' + e.message)
-                      }
-                      setContextMenu(null)
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                    style={{ color: 'var(--na-text-secondary)' }}
-                  >
-                    <Quote className="w-3.5 h-3.5" />
-                    引用到对话
-                  </button>
-                )}
-                {selectedText && <div className="mx-2 my-0.5" style={{ height: 1, background: 'var(--na-border-subtle)' }} />}
-                <button
-                  onClick={() => { loadHtmlPreview(); setContextMenu(null) }}
-                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                  style={{ color: 'var(--na-text-secondary)' }}
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  刷新预览
-                </button>
-                <button
-                  onClick={() => { window.electronAPI.wordOpenWithLibreOffice(filePath); setContextMenu(null) }}
-                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                  style={{ color: 'var(--na-text-secondary)' }}
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  在 LibreOffice 中打开
-                </button>
-              </div>
+                <Quote className="w-3.5 h-3.5" />
+                引用到对话
+              </button>
             )}
-          </div>
-        )}
-
-        {/* PDF Preview */}
-        {viewMode === 'pdf' && (
-          <div className="h-full overflow-hidden">
-            {pdfLoading && (
-              <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
-                <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                <span className="text-sm">转换为 PDF...</span>
-              </div>
-            )}
-            {pdfError && !pdfLoading && (
-              <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--na-status-explore)' }}>
-                <span className="text-sm">PDF 转换失败: {pdfError}</span>
-                <button
-                  onClick={() => setViewMode('html')}
-                  className="px-3 py-1 text-[11px] rounded transition-colors"
-                  style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}
-                >
-                  切换回 HTML 预览
-                </button>
-              </div>
-            )}
-            {pdfUrl && !pdfLoading && (
-              <iframe
-                src={pdfUrl}
-                className="w-full h-full"
-                style={{ border: 'none' }}
-                title="Word PDF Preview"
-              />
-            )}
-          </div>
-        )}
-
-        {/* Split Preview */}
-        {viewMode === 'split' && (
-          <div className="h-full grid grid-cols-2">
-            {/* Left: HTML */}
-            <div className="h-full overflow-auto border-r border-[var(--na-border-subtle)]">
-              {htmlLoading && (
-                <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
-                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                  <span className="text-sm">加载文档...</span>
-                </div>
-              )}
-              {htmlError && !htmlLoading && (
-                <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-status-explore)' }}>
-                  <span className="text-sm">加载失败: {htmlError}</span>
-                </div>
-              )}
-              {processedHtml && (
-                <div
-                  ref={htmlContainerRef}
-                  className="p-4"
-                  style={{
-                    background: isDark ? '#141414' : '#fff',
-                    color: isDark ? '#d0d0d0' : 'inherit',
-                    minHeight: '100%',
-                  }}
-                  dangerouslySetInnerHTML={{ __html: processedHtml }}
-                  onMouseUp={() => {
-                    if (editingParagraph !== null) return
-                    setTimeout(() => {
-                      const sel = window.getSelection()
-                      if (!sel || sel.rangeCount === 0) {
-                        setSelectedText('')
-                        setToolbarPos(null)
-                        setSelectedParagraphs(null)
-                        return
-                      }
-                      const text = sel.toString().trim()
-                      if (!text || text.length === 0) {
-                        setSelectedText('')
-                        setToolbarPos(null)
-                        setSelectedParagraphs(null)
-                        return
-                      }
-                      const range = sel.getRangeAt(0)
-                      const container = htmlContainerRef.current
-                      const inContainer = container ? container.contains(range.commonAncestorContainer) : false
-                      if (!container || !inContainer) {
-                        setSelectedText('')
-                        setToolbarPos(null)
-                        setSelectedParagraphs(null)
-                        return
-                      }
-                      let startNode: Node | null = range.startContainer
-                      let endNode: Node | null = range.endContainer
-                      if (startNode.nodeType === Node.TEXT_NODE) startNode = startNode.parentElement
-                      if (endNode.nodeType === Node.TEXT_NODE) endNode = endNode.parentElement
-                      const startEl = (startNode as Element | null)?.closest('[data-p-index]')
-                      const endEl = (endNode as Element | null)?.closest('[data-p-index]')
-                      const startIdx = startEl ? parseInt(startEl.getAttribute('data-p-index') || '-1', 10) : -1
-                      const endIdx = endEl ? parseInt(endEl.getAttribute('data-p-index') || '-1', 10) : startIdx
-                      setSelectedText(text)
-                      setSelectedParagraphs(startIdx >= 0 ? { startIdx, endIdx: Math.max(startIdx, endIdx) } : null)
-                      const rect = range.getBoundingClientRect()
-                      setToolbarPos({ x: rect.left + rect.width / 2, y: rect.top - 8 })
-                    }, 10)
-                  }}
-                  onMouseDown={() => {
-                    setSelectedText('')
-                    setToolbarPos(null)
-                    setSelectedParagraphs(null)
-                    setContextMenu(null)
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setContextMenu({ x: e.clientX, y: e.clientY, visible: true })
-                  }}
-                />
-              )}
-              {contextMenu?.visible && (
-                <div
-                  className="fixed z-[200] flex flex-col gap-0.5 py-1 rounded-md shadow-lg"
-                  style={{
-                    left: contextMenu.x,
-                    top: contextMenu.y,
-                    background: 'var(--na-bg-popover)',
-                    border: '1px solid var(--na-border-subtle)',
-                    minWidth: 160,
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  {selectedText && selectedParagraphs && (
-                    <button
-                      onClick={async () => {
-                        try {
-                          const structure = await window.electronAPI.wordAnalyzeStructure(filePath)
-                          if (structure.error || !structure.items) {
-                            toast.error(structure.error || '解析文档失败')
-                            setContextMenu(null)
-                            return
-                          }
-                          const paragraphs = []
-                          const { startIdx, endIdx } = selectedParagraphs
-                          for (let i = startIdx; i <= Math.max(startIdx, endIdx); i++) {
-                            const item = structure.items[i]
-                            if (item && item.fullText.trim() !== '') {
-                              paragraphs.push({ index: (item as any).index ?? i, text: item.fullText, style: item.style, lineStart: item.lineStart, lineEnd: item.lineEnd })
-                            }
-                          }
-                          window.dispatchEvent(new CustomEvent('word:text-selected', {
-                            detail: { filePath, fileName: filePath.split('/').pop() || filePath, selectedText, paragraphs },
-                          }))
-                          toast.success('已引用到对话')
-                        } catch (e: any) {
-                          toast.error('引用失败: ' + e.message)
-                        }
-                        setContextMenu(null)
-                      }}
-                      className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                      style={{ color: 'var(--na-text-secondary)' }}
-                    >
-                      <Quote className="w-3.5 h-3.5" />
-                      引用到对话
-                    </button>
-                  )}
-                  {selectedText && <div className="mx-2 my-0.5" style={{ height: 1, background: 'var(--na-border-subtle)' }} />}
-                  <button
-                    onClick={() => { loadHtmlPreview(); setContextMenu(null) }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                    style={{ color: 'var(--na-text-secondary)' }}
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    刷新预览
-                  </button>
-                  <button
-                    onClick={() => { window.electronAPI.wordOpenWithLibreOffice(filePath); setContextMenu(null) }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
-                    style={{ color: 'var(--na-text-secondary)' }}
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    在 LibreOffice 中打开
-                  </button>
-                </div>
-              )}
-            </div>
-            {/* Right: PDF */}
-            <div className="h-full overflow-hidden">
-              {pdfLoading && (
-                <div className="flex items-center justify-center h-full" style={{ color: 'var(--na-text-tertiary)' }}>
-                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                  <span className="text-sm">转换为 PDF...</span>
-                </div>
-              )}
-              {pdfError && !pdfLoading && (
-                <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--na-status-explore)' }}>
-                  <span className="text-sm">PDF 转换失败: {pdfError}</span>
-                  <button
-                    onClick={() => setViewMode('html')}
-                    className="px-3 py-1 text-[11px] rounded transition-colors"
-                    style={{ background: 'var(--na-accent-soft)', color: 'var(--na-accent)' }}
-                  >
-                    切换回 HTML 预览
-                  </button>
-                </div>
-              )}
-              {pdfUrl && !pdfLoading && (
-                <iframe
-                  src={pdfUrl}
-                  className="w-full h-full"
-                  style={{ border: 'none' }}
-                  title="Word PDF Preview"
-                />
-              )}
-            </div>
+            {selectedText && <div className="mx-2 my-0.5" style={{ height: 1, background: 'var(--na-border-subtle)' }} />}
+            <button
+              onClick={() => { loadDocument(getScrollTop()); setContextMenu(null) }}
+              className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
+              style={{ color: 'var(--na-text-secondary)' }}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              刷新预览
+            </button>
+            <button
+              onClick={() => { window.electronAPI.wordOpenExternally(filePath); setContextMenu(null) }}
+              className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--na-bg-hover)]"
+              style={{ color: 'var(--na-text-secondary)' }}
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              用系统默认程序打开
+            </button>
           </div>
         )}
       </div>
-
     </div>
   )
 }

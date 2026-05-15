@@ -70,6 +70,8 @@ export interface ElectronAPI {
   wordCreateFromMarkdown: (payload: { outputPath: string; title?: string; content: string }) => Promise<{ success: boolean; path?: string; error?: string }>
   wordAnalyzeStructure: (path: string) => Promise<{ items: Array<{ type: string; summary: string; fullText: string; style?: string; lineStart: number; lineEnd: number }>; error?: string }>
   wordConvertToIndexedHtml: (path: string) => Promise<{ html: string; error?: string }>
+  wordConvertToPdf: (path: string) => Promise<{ pdfPath?: string; error?: string }>
+  wordOpenWithLibreOffice: (path: string) => Promise<{ success: boolean; error?: string }>
   wordOpenExternally: (path: string) => Promise<{ success: boolean; error?: string }>
   wordWatchExternal: (path: string) => Promise<{ success: boolean }>
   wordUnwatchExternal: (path: string) => Promise<{ success: boolean }>
@@ -272,6 +274,8 @@ const api: ElectronAPI = {
   wordCreateFromMarkdown: (payload) => ipcRenderer.invoke('word:createFromMarkdown', payload),
   wordAnalyzeStructure: (path) => ipcRenderer.invoke('word:analyzeStructure', path),
   wordConvertToIndexedHtml: (path) => ipcRenderer.invoke('word:convertToIndexedHtml', path),
+  wordConvertToPdf: (path) => ipcRenderer.invoke('word:convertToPdf', path),
+  wordOpenWithLibreOffice: (path) => ipcRenderer.invoke('word:openWithLibreOffice', path),
   wordOpenExternally: (path) => ipcRenderer.invoke('word:openExternally', path),
   wordWatchExternal: (path) => ipcRenderer.invoke('word:watchExternal', path),
   wordUnwatchExternal: (path) => ipcRenderer.invoke('word:unwatchExternal', path),

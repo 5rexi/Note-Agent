@@ -127,7 +127,16 @@ export function autoRepairXml(xml: string): string {
     return `<w:t xml:space="preserve">${content}</w:t>`
   })
 
-  xml = xml.replace(/>\s+</g, '><')
+  // Strip whitespace between tags, but NEVER inside CDATA sections
+  // (CDATA may legitimately contain sequences like "> <").
+  const parts = xml.split(/(<!\[CDATA\[.*?\]\]>)/gs)
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i].startsWith('<![CDATA[')) {
+      parts[i] = parts[i].replace(/>\s+</g, '><')
+    }
+  }
+  xml = parts.join('')
+
   return xml
 }
 
@@ -151,8 +160,9 @@ export async function unpackDocx(filePath: string, outputDir: string): Promise<U
         try {
           // Use JSZip's built-in encoding detection (handles UTF-8 BOM, UTF-16, etc.)
           const xmlStr = await entry.async('string')
-          const pretty = prettyPrintXml(sanitizeXmlString(xmlStr))
-          writeFileSync(destPath, pretty, 'utf-8')
+          // Do NOT pretty-print — prettyPrintXml breaks CDATA and other
+          // special XML constructs that are common in real Word documents.
+          writeFileSync(destPath, sanitizeXmlString(xmlStr), 'utf-8')
         } catch {
           const content = await entry.async('nodebuffer')
           writeFileSync(destPath, content)
@@ -267,38 +277,94 @@ export async function replaceParagraphText(
     }
 
     const oldParagraph = paragraphs[paragraphIndex]
-
-    // Cache properties BEFORE clearing so we can preserve formatting.
-    const pPrList = oldParagraph.getElementsByTagName('w:pPr')
-    const pPr = pPrList.length > 0 ? pPrList[0] : null
-
-    const runs = oldParagraph.getElementsByTagName('w:r')
-    const rPrList = runs.length > 0 ? runs[0].getElementsByTagName('w:rPr') : []
-    const rPr = rPrList.length > 0 ? rPrList[0] : null
-
-    // Remove all existing child nodes (runs, properties, bookmarks, etc.)
-    while (oldParagraph.firstChild) {
-      oldParagraph.removeChild(oldParagraph.firstChild)
-    }
-
-    // Re-attach paragraph properties if they existed
-    if (pPr) {
-      oldParagraph.appendChild(pPr.cloneNode(true))
-    }
-
-    const newRun = doc.createElement('w:r')
-    if (rPr) {
-      newRun.appendChild(rPr.cloneNode(true))
-    }
-
-    const newTextNode = doc.createElement('w:t')
     const sanitizedNewText = sanitizeXmlString(newText)
-    if (/^\s+|\s+$/.test(sanitizedNewText)) {
-      newTextNode.setAttribute('xml:space', 'preserve')
+
+    // Replace the paragraph text while preserving formatting.  Instead of
+    // blindly keeping the first run (which may be a footnote ref, spell-check
+    // marker, or other tiny element with a small font), we pick the "dominant"
+    // run — the one that contains the most text — as the format template.
+    // This ensures the new text inherits the paragraph's primary font size.
+    const runs = oldParagraph.getElementsByTagName('w:r')
+    if (runs.length > 0) {
+      // 1. Find the dominant run (longest text content)
+      let dominantRun: Element | null = null
+      let maxTextLen = -1
+      for (let i = 0; i < runs.length; i++) {
+        const run = runs[i]
+        let textLen = 0
+        const tNodes = run.getElementsByTagName('w:t')
+        for (let j = 0; j < tNodes.length; j++) {
+          textLen += (tNodes[j].textContent || '').length
+        }
+        if (textLen > maxTextLen) {
+          maxTextLen = textLen
+          dominantRun = run as Element
+        }
+      }
+
+      // 2. Build the best rPr: start from the dominant run's rPr, then merge
+      //    in the paragraph default rPr (pPr/rPr) to back-fill anything missing.
+      let bestRPr: Element | null = null
+      if (dominantRun) {
+        const domRPr = dominantRun.getElementsByTagName('w:rPr')[0]
+        if (domRPr) {
+          bestRPr = domRPr.cloneNode(true) as Element
+        }
+      }
+      const pPrList = oldParagraph.getElementsByTagName('w:pPr')
+      if (pPrList.length > 0) {
+        const pRPr = pPrList[0].getElementsByTagName('w:rPr')[0]
+        if (pRPr) {
+          if (!bestRPr) {
+            bestRPr = pRPr.cloneNode(true) as Element
+          } else {
+            mergeRPr(bestRPr, pRPr as Element, doc)
+          }
+        }
+      }
+
+      // 3. Remove all old runs
+      for (let i = runs.length - 1; i >= 0; i--) {
+        const run = runs[i]
+        if (run.parentNode) {
+          run.parentNode.removeChild(run)
+        }
+      }
+
+      // 4. Create a fresh run with the merged rPr and new text
+      const newRun = doc.createElement('w:r')
+      if (bestRPr) {
+        newRun.appendChild(bestRPr)
+      }
+      const newTextNode = doc.createElement('w:t')
+      newTextNode.textContent = sanitizedNewText
+      if (/^\s+|\s+$/.test(sanitizedNewText)) {
+        newTextNode.setAttribute('xml:space', 'preserve')
+      }
+      newRun.appendChild(newTextNode)
+      oldParagraph.appendChild(newRun)
+    } else {
+      // No runs exist — fall back to creating a minimal run.
+      const pPrList = oldParagraph.getElementsByTagName('w:pPr')
+      const pPr = pPrList.length > 0 ? pPrList[0] : null
+
+      // Remove everything except pPr
+      while (oldParagraph.firstChild) {
+        oldParagraph.removeChild(oldParagraph.firstChild)
+      }
+      if (pPr) {
+        oldParagraph.appendChild(pPr.cloneNode(true))
+      }
+
+      const newRun = doc.createElement('w:r')
+      const newTextNode = doc.createElement('w:t')
+      newTextNode.textContent = sanitizedNewText
+      if (/^\s+|\s+$/.test(sanitizedNewText)) {
+        newTextNode.setAttribute('xml:space', 'preserve')
+      }
+      newRun.appendChild(newTextNode)
+      oldParagraph.appendChild(newRun)
     }
-    newTextNode.textContent = sanitizedNewText
-    newRun.appendChild(newTextNode)
-    oldParagraph.appendChild(newRun)
 
 
     const serializer = new XMLSerializer()
@@ -374,6 +440,31 @@ function ensureRPr(run: Element, doc: Document): Element {
     run.insertBefore(rPr, run.firstChild)
   }
   return rPr
+}
+
+/**
+ * Copy formatting properties from sourceRPr into targetRPr, but only for
+ * tags that are missing in targetRPr.  This preserves the first run's
+ * explicit formatting while back-filling defaults that may have lived in
+ * later runs (e.g. font size, font family, colour).
+ */
+const IMPORTANT_RPR_TAGS = [
+  'w:rFonts', 'w:sz', 'w:szCs', 'w:color', 'w:b', 'w:bCs',
+  'w:i', 'w:iCs', 'w:u', 'w:strike', 'w:dstrike', 'w:vertAlign',
+  'w:highlight', 'w:shd', 'w:lang', 'w:caps', 'w:smallCaps',
+  'w:spacing', 'w:w', 'w:kern', 'w:position', 'w:emboss',
+  'w:imprint', 'w:outline', 'w:shadow', 'w:specVanish',
+]
+
+function mergeRPr(targetRPr: Element, sourceRPr: Element, doc: Document): void {
+  for (const tagName of IMPORTANT_RPR_TAGS) {
+    if (!targetRPr.getElementsByTagName(tagName)[0]) {
+      const sourceEl = sourceRPr.getElementsByTagName(tagName)[0]
+      if (sourceEl) {
+        targetRPr.appendChild(sourceEl.cloneNode(true))
+      }
+    }
+  }
 }
 
 function setBoolRPr(rPr: Element, tagName: string, value: boolean | null, doc: Document): void {

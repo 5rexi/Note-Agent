@@ -1,5 +1,6 @@
 {
   "name": "note-agent",
+  "author": "Note Agent Team <note-agent@example.com>",
   "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "Local-first, task-session driven desktop agent workspace",
@@ -16,8 +17,10 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "cli": "bun run src/cli.ts",
-    "dist": "bun run build && electron-builder --win",
-    "dist:dir": "bun run build && electron-builder --win --dir"
+    "dist": "bun run build && electron-builder",
+    "dist:win": "bun run scripts/dist-win.ts",
+    "dist:linux": "bun run build && electron-builder --linux",
+    "dist:dir": "bun run build && electron-builder --dir"
   },
   "build": {
     "appId": "com.note-agent.app",
@@ -44,6 +47,14 @@
           "arch": ["x64"]
         }
       ]
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
+      ],
+      "category": "Development"
     },
     "nsis": {
       "oneClick": false,
@@ -75,6 +86,7 @@
     "minimatch": "^10.2.5",
     "monaco-editor": "^0.55.1",
     "next-themes": "^0.4.6",
+    "node-addon-api": "^7.1.0",
     "node-pty": "^1.1.0",
     "openai": "^4.95.0",
     "pptx-to-pdf": "^0.1.3",

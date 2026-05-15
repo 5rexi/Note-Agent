@@ -67,9 +67,11 @@ export class TerminalManager extends EventEmitter {
     const shellType = getShellType(actualShell)
     const actualCwd = cwd || process.cwd()
 
-    // Convert cwd for WSL/Git Bash on Windows
+    // Convert cwd for WSL on Windows (Git Bash keeps Windows paths —
+    // node-pty uses CreateProcess whose lpCurrentDirectory must be a
+    // valid Windows path; /c/Users/… is rejected as ERROR_DIRECTORY 267)
     let spawnCwd = actualCwd
-    if (process.platform === 'win32' && shellType !== 'native') {
+    if (process.platform === 'win32' && shellType === 'wsl') {
       spawnCwd = convertWindowsPathForShell(actualCwd, shellType)
     }
 

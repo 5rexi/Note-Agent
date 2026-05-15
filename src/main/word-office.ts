@@ -25,6 +25,141 @@ function getDb() {
   return (global as any).__db as import('./db').Database | undefined
 }
 
+// ── Get configured/bundled soffice ──
+
+function getConfiguredSoffice(): string | null {
+  try {
+    const db = (global as any).__db
+    if (!db) return null
+    const raw = db.getSetting('wordSupport')
+    if (!raw) return null
+    const config = JSON.parse(raw)
+    if (!config.enabled) return null
+    if (config.sofficeType === 'system-auto' || config.sofficeType === 'system-manual') {
+      return config.sofficePath || null
+    }
+    if (config.sofficeType === 'bundled') {
+      return config.bundledPath || null
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+let cachedSystemSoffice: string | null | undefined = undefined
+
+function findSystemSoffice(): string | null {
+  if (cachedSystemSoffice !== undefined) return cachedSystemSoffice
+  const { execSync } = require('child_process')
+  const isWindows = process.platform === 'win32'
+  const cmd = isWindows ? 'where' : 'which'
+  const names = isWindows ? ['soffice.exe', 'soffice'] : ['soffice', 'libreoffice']
+  for (const name of names) {
+    try {
+      const result = execSync(`${cmd} ${name}`, { encoding: 'utf-8', timeout: 3000, env: process.env }).trim().split('\n')[0]
+      if (result) {
+        cachedSystemSoffice = result
+        return result
+      }
+    } catch {
+      continue
+    }
+  }
+  cachedSystemSoffice = null
+  return null
+}
+
+export function getEffectiveSoffice(): string | null {
+  const configured = getConfiguredSoffice()
+  if (configured) return configured
+  return findSystemSoffice()
+}
+
+function invalidateSofficeCache() {
+  cachedSystemSoffice = undefined
+}
+
+// ── Conversion helpers ──
+
+export async function convertWithSoffice(filePath: string, targetFormat: string): Promise<{ pdfPath?: string; error?: string }> {
+  // Check cache first for PDF output
+  if (targetFormat === 'pdf') {
+    const cached = getCachedPdfPath(filePath)
+    if (cached.isFresh && cached.pdfPath) {
+      return { pdfPath: cached.pdfPath }
+    }
+  }
+
+  const soffice = getEffectiveSoffice()
+  if (!soffice) {
+    return { error: '未找到 LibreOffice (soffice)。请在"设置 → 文件支持 → Word"中配置。' }
+  }
+
+  const outputDir = tmpdir()
+  const baseName = basename(filePath).replace(/\.(docx|doc|pptx|xlsx|xls|odt)$/i, '')
+  const tempOutput = join(outputDir, `${baseName}.${targetFormat}`)
+
+  if (existsSync(tempOutput)) {
+    try { unlinkSync(tempOutput) } catch {}
+  }
+
+  return new Promise((resolve) => {
+    const args = ['--headless', '--convert-to', targetFormat, '--outdir', outputDir, filePath]
+    const proc = spawn(soffice, args, {
+      env: { ...process.env, HOME: process.env.HOME || process.env.USERPROFILE || homedir() },
+      timeout: 120000,
+    })
+
+    let stderr = ''
+    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+
+    proc.on('close', (code) => {
+      if (code === 0 && existsSync(tempOutput)) {
+        if (targetFormat === 'pdf') {
+          try {
+            const pdfBuffer = readFileSync(tempOutput)
+            const cachedPath = savePdfCache(filePath, pdfBuffer)
+            unlinkSync(tempOutput)
+            resolve({ pdfPath: cachedPath })
+          } catch (err: any) {
+            resolve({ error: `缓存保存失败: ${err.message}` })
+          }
+        } else {
+          resolve({ pdfPath: tempOutput })
+        }
+      } else {
+        resolve({ error: `LibreOffice 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
+      }
+    })
+
+    proc.on('error', (err) => {
+      resolve({ error: `LibreOffice 启动失败: ${err.message}` })
+    })
+  })
+}
+
+// ── Open with LibreOffice ──
+
+function openWithLibreOffice(filePath: string): { success: boolean; error?: string } {
+  const soffice = getEffectiveSoffice()
+  if (!soffice) {
+    return { success: false, error: '未找到 LibreOffice。请在"设置 → 文件支持 → Word"中配置。' }
+  }
+
+  try {
+    const proc = spawn(soffice, [filePath], {
+      detached: true,
+      stdio: 'ignore',
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    })
+    proc.unref()
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || '启动 LibreOffice 失败' }
+  }
+}
+
 // ── System default open (no LibreOffice) ──
 
 function openWithSystemDefault(filePath: string): { success: boolean; error?: string } {
@@ -829,6 +964,31 @@ export function registerWordHandlers() {
 
   ipcMain.handle('word:analyzeStructure', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
     return analyzeDocxStructure(filePath)
+  })
+
+  ipcMain.handle('word:convertToPdf', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
+    try {
+      const ext = filePath.split('.').pop()?.toLowerCase()
+      if (ext === 'docx') {
+        return convertWithSoffice(filePath, 'pdf')
+      }
+      if (ext === 'doc') {
+        const docxResult = await convertWithSoffice(filePath, 'docx')
+        if (docxResult.error || !docxResult.pdfPath) {
+          return { error: docxResult.error || '.doc 转换失败' }
+        }
+        const pdfResult = await convertWithSoffice(docxResult.pdfPath!, 'pdf')
+        try { unlinkSync(docxResult.pdfPath!) } catch {}
+        return pdfResult
+      }
+      return { error: `不支持的 Word 格式: .${ext}` }
+    } catch (err: any) {
+      return { error: err.message || '转换失败' }
+    }
+  })
+
+  ipcMain.handle('word:openWithLibreOffice', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
+    return openWithLibreOffice(filePath)
   })
 
   ipcMain.handle('word:openExternally', async (_event: Electron.IpcMainInvokeEvent, filePath: string) => {
