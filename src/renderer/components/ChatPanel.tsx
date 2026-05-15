@@ -1620,10 +1620,21 @@ export default function ChatPanel({
           </div>
         )}
         <div className="px-4 py-4 space-y-5">
-          {mergeAssistantMessages(messages).map((msg: ChatMessage) => {
+          {mergeAssistantMessages(messages).map((msg: ChatMessage, index, arr) => {
             const isUser = msg.role === 'user'
             const isTool = msg.role === 'tool'
             if (isTool) return null // Skip tool messages in UI (shown in assistant metadata)
+
+            // Determine if this is the first visible assistant message in a consecutive block.
+            let prevVisibleRole: string | null = null
+            for (let i = index - 1; i >= 0; i--) {
+              if (arr[i].role !== 'tool') {
+                prevVisibleRole = arr[i].role
+                break
+              }
+            }
+            const showAgentHeader = !isUser && prevVisibleRole !== 'assistant'
+
             return (
               <div key={msg.id} className="group">
                 {/* User message — right-aligned bubble */}
@@ -1663,22 +1674,28 @@ export default function ChatPanel({
                 {/* AI message — left-aligned full width */}
                 {!isUser && (
                   <div className="flex gap-3">
-                    <div
-                      className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center"
-                      style={{ background: 'var(--na-bg-active)' }}
-                    >
-                      <Sparkles
-                        className="w-3.5 h-3.5"
-                        style={{ color: 'var(--na-text-secondary)' }}
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
+                    {showAgentHeader ? (
                       <div
-                        className="text-[12px] font-medium mb-1"
-                        style={{ color: 'var(--na-text-secondary)' }}
+                        className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center"
+                        style={{ background: 'var(--na-bg-active)' }}
                       >
-                        Note Agent
+                        <Sparkles
+                          className="w-3.5 h-3.5"
+                          style={{ color: 'var(--na-text-secondary)' }}
+                        />
                       </div>
+                    ) : (
+                      <div className="w-6 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      {showAgentHeader && (
+                        <div
+                          className="text-[12px] font-medium mb-1"
+                          style={{ color: 'var(--na-text-secondary)' }}
+                        >
+                          Note Agent
+                        </div>
+                      )}
                       <AiMessageContent
                         content={msg.content}
                         toolCalls={msg.tool_calls ? JSON.parse(msg.tool_calls) : undefined}
