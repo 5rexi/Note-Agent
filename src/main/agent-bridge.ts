@@ -54,6 +54,7 @@ import {
   WordRemoveTool,
   WordQueryTool,
   WordRawTool,
+  WordFillTemplateTool,
   DoneTool,
   ModelRouter,
   createTriModelConfig,
@@ -138,6 +139,7 @@ function initTools() {
     WordRemoveTool,
     WordQueryTool,
     WordRawTool,
+    WordFillTemplateTool,
     DoneTool,
   ]
   tools.forEach(registerTool)

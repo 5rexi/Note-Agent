@@ -21,7 +21,7 @@ export const WordSetTool: Tool<Input, { filePath: string; path: string; props: R
     'Set properties on an element at a specific path in a Word document. ' +
     'Use wordQuery to find the correct path first. ' +
     'Supported props depend on element type:\n' +
-    '- On a run (/body/p[N]/r[M]): text, bold, italic, fontSize (half-points), color (hex)\n' +
+    '- On a run (/body/p[N]/r[M]): text, bold, italic, superscript, subscript, fontSize (half-points), color (hex)\n' +
     '- On a paragraph (/body/p[N]): alignment (left/center/right/justify), headingLevel (1-6), spacingAfter (twips), indentation ({left, right, firstLine})\n' +
     '- On any element: style (paragraph style name)',
   inputSchema,
@@ -194,6 +194,28 @@ function applyProperty(el: Element, key: string, value: any, doc: Document): boo
       const rPr = ensureRPr(el, doc)
       const hex = String(value).replace(/^#/, '')
       getOrCreateChild(rPr, 'w:color', doc).setAttribute('w:val', hex)
+      return true
+    }
+
+    case 'superscript': {
+      const rPr = ensureRPr(el, doc)
+      if (value) {
+        const va = getOrCreateChild(rPr, 'w:vertAlign', doc)
+        va.setAttribute('w:val', 'superscript')
+      } else {
+        removeChildIfExists(rPr, 'w:vertAlign')
+      }
+      return true
+    }
+
+    case 'subscript': {
+      const rPr = ensureRPr(el, doc)
+      if (value) {
+        const va = getOrCreateChild(rPr, 'w:vertAlign', doc)
+        va.setAttribute('w:val', 'subscript')
+      } else {
+        removeChildIfExists(rPr, 'w:vertAlign')
+      }
       return true
     }
 
