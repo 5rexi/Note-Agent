@@ -71,6 +71,7 @@ export function getProviderDisplayName(providerId: string): string {
     'minimax-global': 'Minimax',
     minimax: 'Minimax',
     kimi: 'Kimi',
+    'kimi-code': 'Kimi Code',
     glm: '智谱 GLM',
     local: '本地模型',
     ollama: 'Ollama',

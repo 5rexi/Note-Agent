@@ -25,18 +25,28 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
         .filter((m) => m.role !== 'system')
         .map((m) => {
           if (m.role === 'assistant' && m.toolCalls) {
-            return {
-              role: 'assistant',
-              content: [
-                { type: 'text', text: m.content },
-                ...m.toolCalls.map((tc) => ({
-                  type: 'tool_use',
-                  id: tc.id,
-                  name: tc.name,
-                  input: tc.input,
-                })),
-              ],
+            const content: any[] = []
+            // Anthropic extended-thinking models require prior thinking blocks
+            // to be passed back verbatim in the content array.
+            if ((m as any).reasoningContent) {
+              content.push({ type: 'thinking', thinking: (m as any).reasoningContent })
             }
+            content.push({ type: 'text', text: m.content })
+            content.push(...m.toolCalls.map((tc) => ({
+              type: 'tool_use',
+              id: tc.id,
+              name: tc.name,
+              input: tc.input,
+            })))
+            return { role: 'assistant', content }
+          }
+          if (m.role === 'assistant') {
+            const content: any[] = []
+            if ((m as any).reasoningContent) {
+              content.push({ type: 'thinking', thinking: (m as any).reasoningContent })
+            }
+            content.push({ type: 'text', text: m.content })
+            return { role: 'assistant', content }
           }
           if (m.role === 'tool') {
             return {
@@ -85,9 +95,7 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
             'x-api-key': config.apiKey,
             'anthropic-version': '2023-06-01',
           }
-          if (baseUrl.includes('api.kimi.com')) {
-            headers['User-Agent'] = 'claude-code/0.1.0'
-          }
+          // Provider-specific headers can be added here if needed
           const r = await fetch(url, {
             method: 'POST',
             headers,

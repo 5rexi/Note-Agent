@@ -48,13 +48,13 @@ class Logger {
     return this.enabled && LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.level]
   }
 
-  private write(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
+  private write(level: LogLevel, ...args: unknown[]): void {
     if (!this.shouldLog(level)) return
 
     ensureLogDir()
 
-    const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
-    const line = `[${formatTimestamp()}] [${level.toUpperCase()}] ${message}${metaStr}\n`
+    const message = args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+    const line = `[${formatTimestamp()}] [${level.toUpperCase()}] ${message}\n`
 
     // Append to file
     try {
@@ -71,20 +71,20 @@ class Logger {
     }
   }
 
-  debug(message: string, meta?: Record<string, unknown>): void {
-    this.write('debug', message, meta)
+  debug(...args: unknown[]): void {
+    this.write('debug', ...args)
   }
 
-  info(message: string, meta?: Record<string, unknown>): void {
-    this.write('info', message, meta)
+  info(...args: unknown[]): void {
+    this.write('info', ...args)
   }
 
-  warn(message: string, meta?: Record<string, unknown>): void {
-    this.write('warn', message, meta)
+  warn(...args: unknown[]): void {
+    this.write('warn', ...args)
   }
 
-  error(message: string, meta?: Record<string, unknown>): void {
-    this.write('error', message, meta)
+  error(...args: unknown[]): void {
+    this.write('error', ...args)
   }
 }
 

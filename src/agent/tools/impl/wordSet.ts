@@ -3,7 +3,7 @@ import type { Tool, ToolContext } from '../Tool'
 import type { ToolResult } from '../../types'
 import { openDocx, saveDocx, closeDocx, resolvePath } from '../../document'
 
-const propSchema = z.record(z.any()).describe(
+const propSchema = z.record(z.string(), z.any()).describe(
   'Properties to set. Examples: { text: "New content" }, { bold: true, color: "FF0000" }, { alignment: "center" }, { headingLevel: 2 }'
 )
 

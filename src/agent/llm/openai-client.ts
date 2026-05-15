@@ -24,7 +24,6 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
 
   return {
     async *stream(messages, tools, signal) {
-      const isDeepSeek = baseUrl.includes('deepseek.com')
       const apiMessages = messages.map((m) => {
         if (m.role === 'assistant' && m.toolCalls) {
           const msg: any = {
@@ -36,10 +35,13 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
               function: { name: tc.name, arguments: JSON.stringify(tc.input) },
             })),
           }
-          // NOTE: Do NOT pass reasoning_content back to the API. DeepSeek's API
-          // does not consume reasoning_content in the request; including it
-          // bloats context and can cause the model to reference its own
-          // reasoning, leading to loops and hallucinations.
+          // Many OpenAI-compatible providers (DeepSeek, Qwen, OpenRouter/Gemini)
+          // require reasoning_content to be echoed back in multi-turn thinking
+          // mode. OpenAI itself ignores unknown fields, so this is safe to send
+          // unconditionally.
+          if ((m as any).reasoningContent !== undefined) {
+            msg.reasoning_content = (m as any).reasoningContent || ''
+          }
           return msg
         }
         if (m.role === 'assistant') {
@@ -47,7 +49,10 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
             role: 'assistant',
             content: m.content,
           }
-          // NOTE: Do NOT pass reasoning_content back to the API. See above.
+          // Echo reasoning_content back for any provider that needs it.
+          if ((m as any).reasoningContent !== undefined) {
+            msg.reasoning_content = (m as any).reasoningContent || ''
+          }
           return msg
         }
         if (m.role === 'tool') {
@@ -93,9 +98,28 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
         body.reasoning_effort = 'high'
       }
 
+      // Kimi (Moonshot) thinking models: enable thinking and preserved thinking for multi-turn tool use.
+      // K2.6 supports thinking.keep="all" to preserve historical reasoning across turns.
+      const isKimi = baseUrl.includes('moonshot') || baseUrl.includes('api.kimi.com')
+      if (isKimi && (config.model?.includes('kimi-k2'))) {
+        if (config.model?.includes('kimi-k2.6')) {
+          body.thinking = { type: 'enabled', keep: 'all' }
+        } else {
+          body.thinking = { type: 'enabled' }
+        }
+        body.temperature = 1.0
+      }
+
+      // GLM (Zhipu) thinking models: enable preserved thinking for multi-turn reasoning continuity.
+      const isGLM = baseUrl.includes('bigmodel') || baseUrl.includes('z.ai')
+      if (isGLM && (config.model?.startsWith('glm-4.') || config.model?.startsWith('glm-5'))) {
+        body.thinking = { type: 'enabled', clear_thinking: false }
+      }
+
       console.log(`[OpenAIClient] Request: model=${config.model}, tools=${tools.length}, msgs=${apiMessages.length}`)
       // DeepSeek free tier frequently queues requests for minutes.
       // Use a shorter timeout so the user gets feedback instead of silent hangs.
+      const isDeepSeek = baseUrl.includes('deepseek.com')
       const fetchTimeoutMs = isDeepSeek ? 25_000 : REQUEST_TIMEOUT_MS
 
       let currentMaxTokens = body.max_tokens
@@ -110,8 +134,8 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
               Authorization: `Bearer ${config.apiKey}`,
             }
             if (isKimiCode) {
-              // Kimi Code API enforces a client whitelist; try to mimic a known agent
-              headers['User-Agent'] = 'claude-code/0.1.0'
+              // Kimi Code API enforces a client whitelist; mimic the official Kimi CLI
+              headers['User-Agent'] = 'KimiCLI/0.77'
             }
             const r = await fetch(url, {
               method: 'POST',

@@ -298,7 +298,7 @@ export async function replaceParagraphText(
         }
         if (textLen > maxTextLen) {
           maxTextLen = textLen
-          dominantRun = run as Element
+          dominantRun = run as unknown as Element
         }
       }
 
@@ -308,7 +308,7 @@ export async function replaceParagraphText(
       if (dominantRun) {
         const domRPr = dominantRun.getElementsByTagName('w:rPr')[0]
         if (domRPr) {
-          bestRPr = domRPr.cloneNode(true) as Element
+          bestRPr = domRPr.cloneNode(true) as unknown as Element
         }
       }
       const pPrList = oldParagraph.getElementsByTagName('w:pPr')
@@ -316,9 +316,9 @@ export async function replaceParagraphText(
         const pRPr = pPrList[0].getElementsByTagName('w:rPr')[0]
         if (pRPr) {
           if (!bestRPr) {
-            bestRPr = pRPr.cloneNode(true) as Element
+            bestRPr = pRPr.cloneNode(true) as unknown as Element
           } else {
-            mergeRPr(bestRPr, pRPr as Element, doc)
+            mergeRPr(bestRPr, pRPr as unknown as Element, doc as any)
           }
         }
       }
@@ -334,7 +334,7 @@ export async function replaceParagraphText(
       // 4. Create a fresh run with the merged rPr and new text
       const newRun = doc.createElement('w:r')
       if (bestRPr) {
-        newRun.appendChild(bestRPr)
+        newRun.appendChild(bestRPr as any)
       }
       const newTextNode = doc.createElement('w:t')
       newTextNode.textContent = sanitizedNewText

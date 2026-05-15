@@ -62,7 +62,7 @@ export const WordRawTool: Tool<Input, { filePath: string; path: string; action: 
 
       if (input.action === 'get') {
         const serializer = new XMLSerializer()
-        const xml = serializer.serializeToString(resolved.element)
+        const xml = serializer.serializeToString(resolved.element as any)
         return {
           data: { filePath: input.filePath, path: input.path, action: 'get', xml },
           preview: `Raw XML of ${input.path}:\n${xml.slice(0, 500)}${xml.length > 500 ? '...' : ''}`,

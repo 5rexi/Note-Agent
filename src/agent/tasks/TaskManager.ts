@@ -30,7 +30,7 @@ export interface BackgroundTask {
   error?: string
   agentId?: string
   progress?: number // 0-100
-  type?: 'latex-download' | 'latex-compile' | 'libreoffice-download' | 'agent' | 'other'
+  type?: 'latex-download' | 'latex-compile' | 'libreoffice-download' | 'pandoc-download' | 'agent' | 'other'
 }
 
 class TaskManager {

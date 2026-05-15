@@ -16,7 +16,7 @@ interface PandocSupportCardProps {
 }
 
 export default function PandocSupportCard({ config, onChange }: PandocSupportCardProps) {
-  const [selectedMode, setSelectedMode] = useState<'auto' | 'manual' | 'bundled' | null>(null)
+  const [selectedMode, setSelectedMode] = useState<'auto' | 'manual' | 'bundled' | 'install' | null>(null)
   const [checking, setChecking] = useState(false)
   const [info, setInfo] = useState<{ installed: boolean; path: string | null; version: string | null } | null>(null)
   const [installing, setInstalling] = useState(false)

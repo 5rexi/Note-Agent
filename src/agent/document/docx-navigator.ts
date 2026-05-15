@@ -175,8 +175,8 @@ export async function openDocx(
     doc: {
       filePath,
       tempDir,
-      document,
-      body,
+      document: document as any,
+      body: body as any,
       docXmlPath,
       isDirty: false,
     },
@@ -192,7 +192,7 @@ export async function saveDocx(
   }
 
   const serializer = new XMLSerializer()
-  let xmlContent = serializer.serializeToString(docHandle.document)
+  let xmlContent = serializer.serializeToString(docHandle.document as any)
   xmlContent = autoRepairXml(xmlContent)
   writeFileSync(docHandle.docXmlPath, xmlContent, 'utf-8')
 

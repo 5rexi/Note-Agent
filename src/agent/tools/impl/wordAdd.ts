@@ -8,7 +8,7 @@ const inputSchema = z.object({
   parentPath: z.string().describe('Parent element path where the new element will be inserted, e.g. /body or /body/p[1]'),
   type: z.enum(['paragraph', 'run', 'table', 'tableRow', 'tableCell', 'text']).describe('Type of element to add'),
   index: z.number().optional().describe('1-based index to insert at within parent (default: append at end)'),
-  props: z.record(z.any()).optional().describe(
+  props: z.record(z.string(), z.any()).optional().describe(
     'Properties for the new element. Examples:\n' +
     '  { text: "Hello" } for paragraph/run\n' +
     '  { text: "Hello", bold: true, color: "FF0000" } for run\n' +
