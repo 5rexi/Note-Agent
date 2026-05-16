@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { Tool, ToolContext } from '../Tool'
 import type { ToolResult } from '../../types'
 import { openDocx, saveDocx, closeDocx, resolvePath } from '../../document'
+import { convertLatexToOmml } from './latex-to-math'
 
 const inputSchema = z.object({
   filePath: z.string().describe('Absolute path to the .docx template file'),
@@ -33,6 +34,7 @@ interface MdRun {
   bold?: boolean
   superscript?: boolean
   subscript?: boolean
+  isFormula?: boolean
 }
 
 interface MdTableRow {
@@ -269,7 +271,7 @@ function parseInlineWithFormulas(text: string): MdRun[] {
   let m
   while ((m = regex.exec(text)) !== null) {
     if (m[2]) {
-      runs.push({ text: m[2], superscript: false }) // Mark as formula via special handling
+      runs.push({ text: m[2], isFormula: true })
     } else if (m[3]) {
       runs.push(...parseInlineRuns(m[3]))
     }
@@ -290,6 +292,9 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
       sp.setAttribute('w:line', '360')
       sp.setAttribute('w:lineRule', 'exact')
       pPr.appendChild(sp)
+      const ind = doc.createElement('w:ind')
+      ind.setAttribute('w:firstLine', '480')
+      pPr.appendChild(ind)
       const rPr = doc.createElement('w:rPr')
       const fonts = doc.createElement('w:rFonts')
       fonts.setAttribute('w:ascii', '仿宋')
@@ -307,6 +312,15 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
 
       for (const run of block.runs || []) {
         if (run.text.trim() === '') continue
+
+        if (run.isFormula) {
+          const r = doc.createElement('w:r')
+          const omml = convertLatexToOmml(run.text, doc)
+          r.appendChild(omml)
+          p.appendChild(r)
+          continue
+        }
+
         const r = doc.createElement('w:r')
         const rrPr = doc.createElement('w:rPr')
         const fonts2 = doc.createElement('w:rFonts')
@@ -415,7 +429,6 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
     }
 
     case 'formula': {
-      // Formula: wrap in a paragraph with OMML
       const p = doc.createElement('w:p')
       const pPr = doc.createElement('w:pPr')
       const jc = doc.createElement('w:jc')
@@ -424,10 +437,8 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
       p.appendChild(pPr)
 
       const r = doc.createElement('w:r')
-      const mRun = doc.createElement('m:r')
-      const omml = buildSimpleOmml(block.latex || '', doc)
-      mRun.appendChild(omml)
-      r.appendChild(mRun)
+      const omml = convertLatexToOmml(block.latex || '', doc)
+      r.appendChild(omml)
       p.appendChild(r)
       return [p]
     }
@@ -435,20 +446,6 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
     default:
       return []
   }
-}
-
-/** Simplified OMML builder for wordFillTemplate. Supports basic expressions. */
-function buildSimpleOmml(latex: string, doc: Document): Element {
-  const oMath = doc.createElement('m:oMath')
-  // For simplicity, render the LaTeX source as a math run.
-  // A full LaTeX→OMML parser would go here; for now we show the raw LaTeX
-  // inside an italic math run so it is visually distinct.
-  const mR = doc.createElement('m:r')
-  const mT = doc.createElement('m:t')
-  mT.textContent = latex
-  mR.appendChild(mT)
-  oMath.appendChild(mR)
-  return oMath
 }
 
 // ── DOM Helpers ──

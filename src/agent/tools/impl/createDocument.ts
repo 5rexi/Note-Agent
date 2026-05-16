@@ -10,6 +10,7 @@ import type { ToolResult } from '../../types'
 import { safePath } from '../../utils/fs-guard'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
+import { convertLatexToDocxMath } from './latex-to-math'
 
 const inputSchema = z.object({
   path: z.string().describe('Relative path for the new .docx file (e.g. "output/report.docx")'),
@@ -135,6 +136,7 @@ export const CreateDocumentTool: Tool<Input, { path: string; paragraphs: number;
           case 'paragraph': {
             children.push(
               new Paragraph({
+                indent: { firstLine: 480 },
                 children: runsToTextRuns(block.runs || [{ text: block.text || '' }], docx),
               })
             )
@@ -166,11 +168,7 @@ export const CreateDocumentTool: Tool<Input, { path: string; paragraphs: number;
             children.push(
               new Paragraph({
                 alignment: AlignmentType.CENTER,
-                children: [
-                  new Math({
-                    children: [new MathRun(latex)],
-                  }),
-                ],
+                children: [convertLatexToDocxMath(latex, docx)],
               })
             )
             paragraphCount++
@@ -332,10 +330,10 @@ function parseInlineWithFormulas(text: string): MdRun[] {
 }
 
 function runsToTextRuns(runs: MdRun[], docx: any): any[] {
-  const { TextRun, Math, MathRun } = docx
+  const { TextRun } = docx
   return runs.map((run) => {
     if (run.isFormula) {
-      return new Math({ children: [new MathRun(run.text)] })
+      return convertLatexToDocxMath(run.text, docx)
     }
     return new TextRun({
       text: run.text,
