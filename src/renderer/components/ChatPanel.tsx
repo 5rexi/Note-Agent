@@ -19,7 +19,9 @@ import {
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
 import {
   Send, Paperclip, PanelRightClose, Plus, X, Sparkles, Zap, Terminal,
   ChevronDown, ChevronUp, Cable, Folder, Loader2, Flame, Copy, Check,
@@ -70,15 +72,16 @@ import type { ProviderConfig } from '../lib/providers'
 // modeConfig, statusConfig, toolIcons, getLastLine, extractMetadata, FoldableSection,
 // mergeAssistantMessages now live in `./chat`.
 // ── Render AI message content (history) ──
-function AiMessageContent({ content, toolCalls: toolCallsProp, onApplyToDocx }: { content: string; toolCalls?: any[]; onApplyToDocx?: () => void }) {
+function AiMessageContent({ content, toolCalls: toolCallsProp, reasoningContent, onApplyToDocx }: { content: string; toolCalls?: any[]; reasoningContent?: string; onApplyToDocx?: () => void }) {
   const { t } = useT()
   // Legacy: parse HTML comment metadata for old messages
   const { content: cleanContent, metadata } = extractMetadata(content)
   const thinkFromMeta = metadata.thinkContent || ''
   const toolCallsFromMeta = metadata.toolCalls || []
 
-  // Prefer new format toolCalls, fallback to legacy metadata
-  const displayToolCalls = toolCallsProp?.length ? toolCallsProp : toolCallsFromMeta
+  // Prefer new format, fallback to legacy metadata
+  const displayThinkContent = reasoningContent || thinkFromMeta
+  const displayToolCalls = Array.isArray(toolCallsProp) && toolCallsProp.length > 0 ? toolCallsProp : toolCallsFromMeta
   const body = cleanContent
 
   const [copied, setCopied] = useState(false)
@@ -92,11 +95,11 @@ function AiMessageContent({ content, toolCalls: toolCallsProp, onApplyToDocx }: 
 
   return (
     <div>
-      {/* Think section (legacy metadata only — new system doesn't store think in DB yet) */}
-      {thinkFromMeta && (
+      {/* Think section */}
+      {displayThinkContent && (
         <div className="mb-3 overflow-hidden" style={{ borderRadius: 'var(--na-radius-md)', border: '1px solid var(--na-border-subtle)', background: 'var(--na-bg-active)' }}>
-          <FoldableSection title={t('thinkingProcess')} lastLine={getLastLine(thinkFromMeta)} defaultOpen={false}>
-            {thinkFromMeta}
+          <FoldableSection title={t('thinkingProcess')} lastLine={getLastLine(displayThinkContent)} defaultOpen={false}>
+            {displayThinkContent}
           </FoldableSection>
         </div>
       )}
@@ -142,7 +145,7 @@ function AiMessageContent({ content, toolCalls: toolCallsProp, onApplyToDocx }: 
       )}
       {body && (
         <div className="markdown-body text-[13px] leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
             {body}
           </ReactMarkdown>
         </div>
@@ -187,17 +190,18 @@ function StreamingCard({
   thinkContent: string
   isThinking: boolean
   isStreaming: boolean
-  toolCalls: Array<{ id: string; name: string; args: any; status: string; result?: any; isSubagent?: boolean }>
+  toolCalls?: Array<{ id: string; name: string; args: any; status: string; result?: any; isSubagent?: boolean }>
   todos?: Array<{ text: string; completed: boolean }>
   todoProgress?: { completed: number; total: number }
 }) {
   const { t } = useT()
   const [thinkExpanded, setThinkExpanded] = useState(false)
   const thinkLastLine = thinkContent ? getLastLine(thinkContent) : undefined
+  const safeToolCalls = toolCalls ?? []
 
   // Determine the status label for the fold header
-  const runningTool = toolCalls.find((t) => t.status === 'running')
-  const needsConfirmTool = toolCalls.find((t) => t.status === 'needs-confirmation')
+  const runningTool = safeToolCalls.find((t) => t.status === 'running')
+  const needsConfirmTool = safeToolCalls.find((t) => t.status === 'needs-confirmation')
   const foldLabel = runningTool
     ? t('callingTool', { name: runningTool.name })
     : needsConfirmTool
@@ -244,9 +248,9 @@ function StreamingCard({
                 style={{ color: 'var(--na-text-tertiary)' }}
               />
             </>
-          ) : toolCalls.length > 0 ? (
+          ) : safeToolCalls.length > 0 ? (
             <>
-              {toolCalls.some((t) => t.status === 'rejected') ? (
+              {safeToolCalls.some((t) => t.status === 'rejected') ? (
                 <X className="w-3.5 h-3.5 shrink-0" style={{ color: '#ef4444' }} />
               ) : (
                 <Check className="w-3.5 h-3.5 shrink-0" style={{ color: '#059669' }} />
@@ -255,14 +259,14 @@ function StreamingCard({
                 className="text-[11px] font-medium"
                 style={{ color: 'var(--na-text-secondary)' }}
               >
-                {toolCalls.some((tc) => tc.status === 'rejected') ? t('terminated') : t('toolStatusCompleted')}
+                {safeToolCalls.some((tc) => tc.status === 'rejected') ? t('terminated') : t('toolStatusCompleted')}
               </span>
             </>
           ) : null}
         </div>
 
         {/* Think + Tools foldable section */}
-        {(thinkContent || toolCalls.length > 0) && (
+        {(thinkContent || safeToolCalls.length > 0) && (
           <div style={{ borderTop: '1px solid var(--na-border-subtle)' }}>
             <button
               onClick={() => setThinkExpanded(!thinkExpanded)}
@@ -349,10 +353,10 @@ function StreamingCard({
                   </div>
                 )}
                 {/* Tool call history */}
-                {toolCalls.length > 0 && (
+                {safeToolCalls.length > 0 && (
                   <div className="space-y-1">
                     <span className="text-[11px] font-medium" style={{ color: 'var(--na-text-tertiary)' }}>{t('toolCallHistory')}</span>
-                    {toolCalls.map((tc) => {
+                    {safeToolCalls.map((tc) => {
                       const Icon = toolIcons[tc.name] || Wrench
                       const statusConfig: Record<string, { label: string; color: string; bg: string; icon: any }> = {
                         running: { label: t('toolStatusRunning'), color: 'var(--na-status-explore)', bg: 'rgba(37,99,235,0.08)', icon: Loader2 },
@@ -401,7 +405,7 @@ function StreamingCard({
       {/* Normal streamed response */}
       {content && (
         <div className="markdown-body text-[13px] leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
             {content}
           </ReactMarkdown>
         </div>
@@ -1698,7 +1702,16 @@ export default function ChatPanel({
                       )}
                       <AiMessageContent
                         content={msg.content}
-                        toolCalls={msg.tool_calls ? JSON.parse(msg.tool_calls) : undefined}
+                        toolCalls={(() => {
+                          if (!msg.tool_calls || typeof msg.tool_calls !== 'string') return undefined
+                          try {
+                            const parsed = JSON.parse(msg.tool_calls)
+                            return Array.isArray(parsed) ? parsed : undefined
+                          } catch {
+                            return undefined
+                          }
+                        })()}
+                        reasoningContent={msg.reasoningContent || undefined}
                         onApplyToDocx={textQuotes.length > 0 ? () => {
                           const quote = textQuotes[0]
                           if (!quote) return

@@ -55,6 +55,7 @@ import {
   WordQueryTool,
   WordRawTool,
   WordFillTemplateTool,
+  CreateDocumentTool,
   DoneTool,
   ModelRouter,
   createTriModelConfig,
@@ -140,6 +141,7 @@ function initTools() {
     WordQueryTool,
     WordRawTool,
     WordFillTemplateTool,
+    CreateDocumentTool,
     DoneTool,
   ]
   tools.forEach(registerTool)
@@ -158,13 +160,12 @@ function initTools() {
           for (const mcpTool of mcpTools) {
             registerTool(createMCPTool(client, mcpTool))
           }
-          console.log(`[AgentBridge] MCP connected: ${mcpConfig.name} (${mcpTools.length} tools)`)
         }).catch((err: any) => {
-          console.warn(`[AgentBridge] MCP failed ${mcpConfig.name}:`, err.message)
+          // MCP connection failed — logged silently
         })
         mcpClients.push(client)
-      } catch (err: any) {
-        console.warn(`[AgentBridge] MCP setup failed ${mcpConfig.name}:`, err.message)
+      } catch {
+        // MCP setup failed — logged silently
       }
     }
   } catch {
@@ -271,8 +272,8 @@ async function loadSettings() {
 function dbToAgentMessage(dbMsg: any): Message | null {
   switch (dbMsg.role) {
     case 'user': {
-      let content: string | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = dbMsg.content
-      if (dbMsg.content.startsWith('[')) {
+      let content: string | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = dbMsg.content || ''
+      if (typeof dbMsg.content === 'string' && dbMsg.content.startsWith('[')) {
         try {
           const parsed = JSON.parse(dbMsg.content)
           if (Array.isArray(parsed)) content = parsed as typeof content
@@ -283,6 +284,7 @@ function dbToAgentMessage(dbMsg: any): Message | null {
     case 'assistant': {
       let content = dbMsg.content || ''
       let toolCalls: any[] | undefined
+      let reasoningContent: string | undefined
 
       const metaMatch = content.match(/<!--NA_META:([A-Za-z0-9+/=]+)-->/)
       if (metaMatch) {
@@ -296,6 +298,9 @@ function dbToAgentMessage(dbMsg: any): Message | null {
               input: tc.args || tc.input || {},
             }))
           }
+          if (metadata.thinkContent) {
+            reasoningContent = metadata.thinkContent
+          }
         } catch {
           // ignore
         }
@@ -304,11 +309,15 @@ function dbToAgentMessage(dbMsg: any): Message | null {
       if (!toolCalls && dbMsg.tool_calls) {
         try { toolCalls = JSON.parse(dbMsg.tool_calls) } catch {}
       }
+      if (!reasoningContent && dbMsg.reasoning_content) {
+        reasoningContent = dbMsg.reasoning_content
+      }
 
       return {
         role: 'assistant',
         content,
         toolCalls: toolCalls?.length ? toolCalls : undefined,
+        reasoningContent,
       }
     }
     case 'tool': {
@@ -350,6 +359,7 @@ function agentMessageToDb(msg: Message): {
   content: string
   tool_calls?: string
   tool_results?: string
+  reasoning_content?: string
 } {
   switch (msg.role) {
     case 'user': {
@@ -359,6 +369,7 @@ function agentMessageToDb(msg: Message): {
     case 'assistant': {
       let content = msg.content
       const reasoning = (msg as any).reasoningContent
+      // Keep legacy HTML comment embedding for backward compatibility
       if (reasoning) {
         const meta = Buffer.from(JSON.stringify({ thinkContent: reasoning }), 'utf-8').toString('base64')
         content += `\n\n<!--NA_META:${meta}-->`
@@ -367,6 +378,7 @@ function agentMessageToDb(msg: Message): {
         role: 'assistant',
         content,
         tool_calls: msg.toolCalls?.length ? JSON.stringify(msg.toolCalls) : undefined,
+        reasoning_content: reasoning || undefined,
       }
     }
     case 'tool':
@@ -577,6 +589,7 @@ function saveMessageToDb(sessionId: string, msg: Message) {
     content: dbMsg.content,
     tool_calls: dbMsg.tool_calls ?? undefined,
     tool_results: dbMsg.tool_results ?? undefined,
+    reasoning_content: dbMsg.reasoning_content ?? undefined,
   })
 }
 
@@ -772,7 +785,6 @@ export function registerAgentBridge() {
         return { success: true }
       } catch (err: any) {
         const stack = err?.stack || ''
-        console.error('[AgentBridge] submit error:', err?.message || 'Unknown error', '\n' + stack)
         const errorMessage = err?.message || 'Unknown error'
         if (!window.isDestroyed()) {
           window.webContents.send('agent:event', sessionId, {

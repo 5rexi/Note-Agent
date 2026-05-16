@@ -58,6 +58,7 @@ export class Database {
         content TEXT NOT NULL,
         tool_calls TEXT,
         tool_results TEXT,
+        reasoning_content TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
@@ -77,6 +78,13 @@ export class Database {
     const hasFolderId = taskColumns.find((c) => c.name === 'folder_id')
     if (!hasFolderId) {
       this.db.prepare('ALTER TABLE tasks ADD COLUMN folder_id TEXT REFERENCES task_folders(id) ON DELETE SET NULL').run()
+    }
+
+    // Migration: add reasoning_content to messages if column doesn't exist
+    const messageColumns = this.db.prepare("PRAGMA table_info(messages)").all() as any[]
+    const hasReasoningContent = messageColumns.find((c) => c.name === 'reasoning_content')
+    if (!hasReasoningContent) {
+      this.db.prepare('ALTER TABLE messages ADD COLUMN reasoning_content TEXT').run()
     }
 
     // Migration: drop is_default column from task_folders (rebuild table)
@@ -377,11 +385,11 @@ export class Database {
     return this.db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId)
   }
 
-  createMessage(data: { id: string; session_id: string; role: string; content: string; tool_calls?: string; tool_results?: string }) {
+  createMessage(data: { id: string; session_id: string; role: string; content: string; tool_calls?: string; tool_results?: string; reasoning_content?: string }) {
     this.db.prepare(`
-      INSERT INTO messages (id, session_id, role, content, tool_calls, tool_results)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(data.id, data.session_id, data.role, data.content, data.tool_calls ?? null, data.tool_results ?? null)
+      INSERT INTO messages (id, session_id, role, content, tool_calls, tool_results, reasoning_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(data.id, data.session_id, data.role, data.content, data.tool_calls ?? null, data.tool_results ?? null, data.reasoning_content ?? null)
     return data
   }
 

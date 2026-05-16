@@ -175,7 +175,7 @@ export default function FloatingPanel() {
   }
 
   const providerGroups: ProviderGroup[] = (() => {
-    if (!costReport?.stats.length) return []
+    if (!costReport?.stats?.length) return []
     const map = new Map<string, ProviderStat[]>()
     for (const stat of costReport.stats) {
       const list = map.get(stat.provider) || []

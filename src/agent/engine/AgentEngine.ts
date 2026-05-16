@@ -128,29 +128,43 @@ export class AgentEngine {
 
     // ── /skill command interception ──
     let slashSkillPrompt: string | undefined
-    const skillMatch = text.match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
-    if (skillMatch) {
-      const skillId = skillMatch[1]
-      const remainingText = skillMatch[2] || ''
-      const skills = loadSkills(this.opts.workspacePath)
-      const skill = skills.find((s) => s.id === skillId)
-      if (skill) {
-        slashSkillPrompt = getSkillPrompt(skill)
-        text = remainingText.trim() || `[使用 ${skill.name} 技能]`
+    try {
+      const skillMatch = text.match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
+      if (skillMatch) {
+        const skillId = skillMatch[1]
+        const remainingText = skillMatch[2] || ''
+        logger.info('[AgentEngine] /skill command detected:', { skillId, remainingText })
+        const skills = loadSkills(this.opts.workspacePath)
+        logger.info('[AgentEngine] Loaded skills count:', skills.length)
+        const skill = skills.find((s) => s.id === skillId)
+        if (skill) {
+          slashSkillPrompt = getSkillPrompt(skill)
+          text = remainingText.trim() || `[使用 ${skill.name} 技能]`
+          logger.info('[AgentEngine] Skill activated:', skill.name, 'prompt length:', slashSkillPrompt.length)
+        } else {
+          logger.warn('[AgentEngine] Skill not found:', skillId)
+        }
       }
-      // If skill not found, leave text as-is (fallback to normal message)
+    } catch (skillErr: any) {
+      logger.error('[AgentEngine] /skill command processing error:', skillErr?.message, skillErr?.stack)
+      // Continue without skill — don't let skill loading crash the session
     }
 
     // Add user message
     let userMsg: Message
-    if (imageParts && imageParts.length > 0) {
-      const parts: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [...imageParts]
-      if (text.trim()) parts.push({ type: 'text', text })
-      userMsg = { role: 'user', content: parts }
-    } else {
-      userMsg = { role: 'user', content: text }
+    try {
+      if (imageParts && Array.isArray(imageParts) && imageParts.length > 0) {
+        const parts: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [...imageParts]
+        if (text && typeof text === 'string' && text.trim()) parts.push({ type: 'text', text })
+        userMsg = { role: 'user', content: parts }
+      } else {
+        userMsg = { role: 'user', content: text || '' }
+      }
+      this.messages.push(userMsg)
+    } catch (msgErr: any) {
+      logger.error('[AgentEngine] Failed to construct user message:', msgErr?.message, msgErr?.stack)
+      throw msgErr
     }
-    this.messages.push(userMsg)
 
     const toolContext = {
       workspacePath: this.opts.workspacePath,
@@ -170,26 +184,38 @@ export class AgentEngine {
       rejectedToolCallIds: new Set(),
     }
 
-    const fileTreeSummary = summarizeFileTree(this.opts.workspacePath, 30)
-    const { taskPlan, persistedPlan, minimalPromptCtx } = await prepareSession({
-      text,
-      llmConfig: this.opts.llmConfig,
-      sessionId: this.sessionId,
-      workspacePath: this.opts.workspacePath,
-      openFiles: this.opts.openFiles,
-      mode: this.opts.mode,
-      toolContext,
-      fileTreeSummary,
-    })
-    let baseSystemPrompt = buildMinimalPrompt(minimalPromptCtx)
-    if (slashSkillPrompt) {
-      baseSystemPrompt += `\n\n## Active Skill\n${slashSkillPrompt}`
+    let baseSystemPrompt = ''
+    let taskPlan: any = null
+    let persistedPlan: any = null
+    let minimalPromptCtx: any = null
+    try {
+      const fileTreeSummary = summarizeFileTree(this.opts.workspacePath, 30)
+      const prepared = await prepareSession({
+        text,
+        llmConfig: this.opts.llmConfig,
+        sessionId: this.sessionId,
+        workspacePath: this.opts.workspacePath,
+        openFiles: this.opts.openFiles,
+        mode: this.opts.mode,
+        toolContext,
+        fileTreeSummary,
+      })
+      taskPlan = prepared.taskPlan
+      persistedPlan = prepared.persistedPlan
+      minimalPromptCtx = prepared.minimalPromptCtx
+      baseSystemPrompt = buildMinimalPrompt(minimalPromptCtx)
+      if (slashSkillPrompt) {
+        baseSystemPrompt += `\n\n## Active Skill\n${slashSkillPrompt}`
+      }
+      logger.info('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
+    } catch (setupErr: any) {
+      logger.error('[AgentEngine] Session setup error:', setupErr?.message, setupErr?.stack)
+      throw setupErr
     }
-    logger.info('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
 
     // Boost maxRounds for research-phase tasks (capped to prevent runaway loops)
     let effectiveMaxRounds = this.opts.maxRounds ?? 20
-    if (taskPlan?.phases?.some(p => p.mode === 'research')) {
+    if (taskPlan?.phases?.some((p: any) => p.mode === 'research')) {
       effectiveMaxRounds = Math.max(effectiveMaxRounds, 30)
       logger.info('[AgentEngine] Research phase detected — boosting maxRounds to', effectiveMaxRounds)
     }
@@ -256,9 +282,18 @@ export class AgentEngine {
         if (event.type === 'tool-use-start') {
           const tool = this.opts.tools.find((t) => t.name === event.name || t.aliases?.includes(event.name))
           if (tool) {
-            // Use full checkToolPermission (includes mode-level checks, rules, etc.)
-            // rather than just tool.checkPermissions.
-            const perm = checkToolPermission(tool, event.input, permissionContext)
+            // Defensive: event.input comes from the LLM and may be malformed/truncated.
+            // Wrap permission checks so a bad input doesn't crash the whole session.
+            let perm: { result: 'allow' | 'ask' | 'deny'; description?: string; reason?: string }
+            try {
+              perm = checkToolPermission(tool, event.input, permissionContext)
+            } catch (permErr: any) {
+              logger.warn(`[AgentEngine] checkToolPermission crashed for ${event.name}, treating as ask:`, permErr?.message)
+              const plan = (() => {
+                try { return tool.renderToolUse?.(event.input as any) || event.name } catch { return event.name }
+              })()
+              perm = { result: 'ask', description: `${plan} — (input validation failed: ${permErr?.message || 'unknown'})` }
+            }
             if (perm.result === 'ask') {
               if (this.opts.shouldAvoidPermissionPrompts) {
                 // Background agents auto-reject permission prompts
@@ -268,11 +303,15 @@ export class AgentEngine {
                 let resolveFn: (allow: boolean) => void
                 const promise = new Promise<boolean>((r) => { resolveFn = r })
 
+                const plan = (() => {
+                  try { return tool.renderToolUse?.(event.input as any) || event.name } catch { return event.name }
+                })()
+
                 yield {
                   type: 'permission-request',
                   toolCallId: event.toolCallId,
                   name: event.name,
-                  description: perm.description,
+                  description: perm.description || plan,
                   resolve: resolveFn!,
                 }
 
@@ -284,6 +323,8 @@ export class AgentEngine {
                   permissionContext.rejectedToolCallIds!.add(event.toolCallId)
                 }
               }
+            } else if (perm.result === 'deny') {
+              permissionContext.rejectedToolCallIds!.add(event.toolCallId)
             }
           }
         }
@@ -294,7 +335,7 @@ export class AgentEngine {
           if (currentTodos.length > 0) {
             // Auto-mark the first incomplete todo as complete when an OUTPUT tool succeeds.
             // Only "write/replace" type tools count as task progress — not searches/reads.
-            const outputTools = ['writeFile', 'writeFileBase64', 'replaceWordParagraph', 'createDocument']
+            const outputTools = ['writeFile', 'writeFileBase64', 'replaceWordParagraph', 'createDocument', 'wordFillTemplate']
             if (outputTools.includes(event.name)) {
               const firstIncomplete = currentTodos.find((t) => !t.completed)
               if (firstIncomplete) {
@@ -336,7 +377,6 @@ export class AgentEngine {
             })
             .join('\n')
           const errorMsg = `❌ Operation failed:\n${errors}`
-          console.error(`[Agent] ${errorMsg}`)
           yield { type: 'error', message: errorMsg }
         }
       }
@@ -357,7 +397,6 @@ export class AgentEngine {
         const nextTodo = currentTodos.find((t) => !t.completed)
         const warningMsg = `⚠️ Task ended early. Incomplete step: "${nextTodo?.text ?? 'unknown'}". ` +
           `The model did not produce the expected tool call. Try rephrasing with more explicit instructions.`
-        console.warn(`[Agent] ${warningMsg}`)
         yield { type: 'text', text: warningMsg }
       }
 

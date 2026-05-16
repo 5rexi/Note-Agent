@@ -4,6 +4,7 @@ import { Provider as JotaiProvider } from 'jotai'
 import { loader } from '@monaco-editor/react'
 import App from './App'
 import './index.css'
+import 'katex/dist/katex.min.css'
 
 // Import Monaco editor core API only (not the full bundle)
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'

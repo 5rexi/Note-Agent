@@ -328,3 +328,61 @@ body {
   background: #1a1a1a;
   box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
+
+/* ── MathML Formula Rendering in Word Viewer ── */
+.docx-viewer math {
+  display: inline-math;
+  font-family: "Cambria Math", "Latin Modern Math", "STIX Two Math", serif;
+}
+
+.docx-viewer math[display="block"],
+.docx-viewer math[mode="display"] {
+  display: block math;
+  margin: 0.5em 0;
+  text-align: center;
+}
+
+/* ── KaTeX Formula Rendering ── */
+/* Ensure KaTeX math doesn't get color overridden by markdown styles */
+.markdown-preview .katex,
+.markdown-body .katex,
+.markdown-bubble .katex {
+  font-size: 1em;
+}
+
+.markdown-preview .katex-display,
+.markdown-body .katex-display,
+.markdown-bubble .katex-display {
+  margin: 0.75em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dark .katex {
+  color: var(--na-text-primary);
+}
+
+.dark .katex .mord,
+.dark .katex .mbin,
+.dark .katex .mrel,
+.dark .katex .mopen,
+.dark .katex .mclose,
+.dark .katex .mpunct,
+.dark .katex .minner,
+.dark .katex .mop,
+.dark .katex .msupsub {
+  color: var(--na-text-primary);
+}
+
+/* Scrollbar for inline math that overflows */
+.katex-display > .katex {
+  max-width: 100%;
+}
+
+.katex-display > .katex > .katex-html {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-left: 2px;
+  padding-right: 2px;
+}

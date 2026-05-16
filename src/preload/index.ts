@@ -185,6 +185,9 @@ export interface ElectronAPI {
   taskList: () => Promise<any[]>
   taskStop: (id: string) => Promise<boolean>
 
+  // DevTools
+  openDevTools: () => void
+
   // Knowledge Base
   kbAddFolder: (path: string, name: string) => Promise<{ id: number; path: string; name: string }>
   kbRemoveFolder: (id: number) => Promise<void>
@@ -422,6 +425,21 @@ const api: ElectronAPI = {
   pathSep: ipcRenderer.sendSync('path:sep'),
   pathIsAbsolute: (p: string) => ipcRenderer.sendSync('path:isAbsolute', p),
   pathNormalize: (p: string) => ipcRenderer.sendSync('path:normalize', p),
+
+  // DevTools
+  openDevTools: () => ipcRenderer.send('app:openDevTools'),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)
+
+// ── Renderer crash reporting ──
+window.addEventListener('error', (event) => {
+  const msg = `[Renderer error] ${event.message}\n  at ${event.filename}:${event.lineno}:${event.colno}\n${event.error?.stack || ''}`
+  ipcRenderer.send('renderer:crash', msg)
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason
+  const msg = `[Renderer unhandledrejection] ${reason?.message || String(reason)}\n${reason?.stack || ''}`
+  ipcRenderer.send('renderer:crash', msg)
+})

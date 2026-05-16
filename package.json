@@ -51,8 +51,14 @@
     "linux": {
       "icon": "assets/icon.png",
       "target": [
-        { "target": "AppImage", "arch": ["x64"] },
-        { "target": "deb", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
       ],
       "category": "Development"
     },
@@ -81,6 +87,7 @@
     "glob": "^13.0.6",
     "jotai": "^2.16.0",
     "jszip": "^3.10.1",
+    "katex": "^0.16.46",
     "lucide-react": "^0.561.0",
     "mammoth": "^1.12.0",
     "minimatch": "^10.2.5",
@@ -97,7 +104,9 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.10.0",
     "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "xlsx": "^0.18.5",

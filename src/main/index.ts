@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell, webContents, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell, webContents, Menu, globalShortcut } from 'electron'
 import { join, isAbsolute, dirname, basename, sep, normalize } from 'path'
 import { pathToFileURL } from 'url'
-import { writeFileSync, existsSync, mkdirSync, watch } from 'fs'
+import { writeFileSync, existsSync, mkdirSync, watch, appendFileSync } from 'fs'
+import { homedir } from 'os'
 import { Database } from './db'
 import { registerFsHandlers } from './fs-utils'
 import { registerAgentBridge } from './agent-bridge'
@@ -16,6 +17,29 @@ import { setMainWindow } from './file-notify'
 import { taskManager } from '../agent'
 import { registerBrowserHost, browserHost, syncBrowserHostFromSettings } from './browser-host'
 import { indexKnowledgeFolder, searchKnowledgeBase } from './knowledge-base'
+
+// ── Crash logging ──
+const CRASH_LOG_DIR = join(homedir(), '.note_agent', 'logs')
+function ensureCrashLogDir(): void {
+  if (!existsSync(CRASH_LOG_DIR)) mkdirSync(CRASH_LOG_DIR, { recursive: true })
+}
+function writeCrashLog(level: string, message: string): void {
+  ensureCrashLogDir()
+  const line = `[${new Date().toISOString()}] [${level}] ${message}\n`
+  try { appendFileSync(join(CRASH_LOG_DIR, 'crashes.log'), line, 'utf-8') } catch {}
+}
+
+process.on('uncaughtException', (err) => {
+  const msg = `[MainProcess uncaughtException] ${err?.message || 'Unknown'}\n${err?.stack || ''}`
+  console.error(msg)
+  writeCrashLog('FATAL', msg)
+})
+
+process.on('unhandledRejection', (reason: any) => {
+  const msg = `[MainProcess unhandledRejection] ${reason?.message || String(reason)}\n${reason?.stack || ''}`
+  console.error(msg)
+  writeCrashLog('ERROR', msg)
+})
 
 // Keep a global reference to prevent GC
 let mainWindow: BrowserWindow | null = null
@@ -68,14 +92,34 @@ async function createWindow() {
     mainWindow.loadURL(pathToFileURL(RENDERER_PATH).toString())
   }
 
-  // Log renderer console messages and errors
+  // Log renderer console messages and errors to both stdout and crash log file
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     const prefix = ['debug', 'info', 'warn', 'error'][level] || 'log'
-    console.log(`[renderer:${prefix}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`)
+    const full = `[renderer:${prefix}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`
+    console.log(full)
+    if (level >= 3) writeCrashLog('RENDERER-ERROR', full)
+  })
+
+  // Catch renderer JS errors (including unhandled exceptions)
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    const msg = `[Renderer crashed] reason=${details.reason}, exitCode=${details.exitCode}`
+    console.error(msg)
+    writeCrashLog('FATAL', msg)
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    console.error('Renderer failed to load:', errorCode, errorDescription)
+    const msg = `Renderer failed to load: ${errorCode} ${errorDescription}`
+    console.error(msg)
+    writeCrashLog('ERROR', msg)
+  })
+
+  // Capture DevTools shortcut via webContents (more reliable than globalShortcut in packaged builds)
+  // Accept: plain F12, Ctrl+Shift+F12, Alt+F12, etc.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.key.toLowerCase() === 'f12') {
+      _event.preventDefault()
+      mainWindow?.webContents.toggleDevTools()
+    }
   })
 
   // Open external links in default browser
@@ -88,6 +132,8 @@ async function createWindow() {
     mainWindow = null
   })
 }
+
+
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -113,6 +159,20 @@ app.whenReady().then(async () => {
   registerPdfCacheHandlers()
   registerBrowserHost()
   syncBrowserHostFromSettings((k) => db.getSetting(k))
+
+  // Renderer crash reporter
+  ipcMain.on('renderer:crash', (_event, message: string) => {
+    console.error(message)
+    writeCrashLog('RENDERER-CRASH', message)
+  })
+
+  // DevTools opener from renderer
+  ipcMain.on('app:openDevTools', (_event) => {
+    const sender = webContents.fromId(_event.sender.id)
+    if (sender && !sender.isDestroyed()) {
+      sender.toggleDevTools()
+    }
+  })
 
   // Path utilities for renderer (preload cannot import Node modules in sandbox)
   ipcMain.on('path:join', (event, ...segments: string[]) => { event.returnValue = join(...segments) })

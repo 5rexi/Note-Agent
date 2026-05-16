@@ -7,6 +7,7 @@ export interface Message {
   content: string
   tool_calls: string | null
   tool_results: string | null
+  reasoningContent: string | null
   created_at: number
 }
 

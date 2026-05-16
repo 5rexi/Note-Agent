@@ -7,7 +7,9 @@ import Editor from '@monaco-editor/react'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
 
 // Delayed Markdown preview: renders on next frame so Monaco isn't blocked
 function MarkdownPreview({ content }: { content: string }) {
@@ -42,11 +44,11 @@ function MarkdownPreview({ content }: { content: string }) {
 
   // Disable expensive syntax highlighting for very large files
   const isLarge = content.length > 100000
-  const rehypePlugins = isLarge ? [] : [rehypeHighlight]
+  const rehypePlugins = isLarge ? [rehypeKatex] : [rehypeHighlight, rehypeKatex]
 
   return (
     <div className="markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins}>
         {content}
       </ReactMarkdown>
     </div>

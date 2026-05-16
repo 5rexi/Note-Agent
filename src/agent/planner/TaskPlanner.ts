@@ -240,11 +240,22 @@ export async function analyzeTask(
       }
     }
 
+    // Guard against empty responses (e.g. model returns nothing)
+    if (!jsonText.trim()) {
+      console.warn('[TaskPlanner] Empty response from model, falling back to simple plan')
+      return null
+    }
+
     // Extract JSON (handle markdown code blocks)
     const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/) ||
                       jsonText.match(/```\s*([\s\S]*?)\s*```/) ||
                       jsonText.match(/(\{[\s\S]*\})/)
     const cleanJson = jsonMatch ? jsonMatch[1].trim() : jsonText.trim()
+
+    if (!cleanJson) {
+      console.warn('[TaskPlanner] No JSON found in response, falling back to simple plan')
+      return null
+    }
 
     const parsed = JSON.parse(cleanJson)
 

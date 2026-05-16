@@ -45,6 +45,8 @@ ${modeRule}
 - When calling tools, do NOT write explanatory text alongside them. Only output text AFTER receiving tool results or when the task is fully complete.
 - Do NOT ask questions in text. ALWAYS use askUserQuestion tool to communicate questions to the user.
 - If stuck or unclear, use askUserQuestion.
+- When the user's request is ambiguous, has multiple valid interpretations, or involves significant consequences (deleting files, destructive edits, irreversible operations, major architectural changes), ALWAYS use askUserQuestion to confirm BEFORE acting. Do NOT guess the user's intent or make assumptions about their preferences.
+- When multiple valid approaches exist, do NOT pick one arbitrarily. Use askUserQuestion to ask which approach the user prefers.
 - When the task is FULLY COMPLETE, call the \`done\` tool to end the session. Do NOT read extra files "just to verify" or "just to be thorough" after finishing.
 - CRITICAL: Never emit a response with zero tool calls while the task remains unfinished. The system interprets text-only responses as stalled and will abort the task.
 - File paths are relative to: ${ctx.workspacePath}`)

@@ -63,6 +63,7 @@ export { WordRemoveTool } from './tools/impl/wordRemove'
 export { WordQueryTool } from './tools/impl/wordQuery'
 export { WordRawTool } from './tools/impl/wordRaw'
 export { WordFillTemplateTool } from './tools/impl/wordFillTemplate'
+export { CreateDocumentTool } from './tools/impl/createDocument'
 export { DoneTool } from './tools/impl/done'
 
 // Subsystems

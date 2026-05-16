@@ -154,40 +154,46 @@ export async function* executeRound(
 
     let roundUsage: { inputTokens: number; outputTokens: number } | undefined
 
-    for await (const event of stream) {
-      switch (event.type) {
-        case 'text':
-          if (event.text) {
-            roundText += event.text
-            yield { type: 'text', text: event.text }
-          }
-          break
-        case 'reasoning':
-          if (event.reasoning) {
-            roundReasoning += event.reasoning
-            yield { type: 'reasoning', text: event.reasoning }
-          }
-          break
-        case 'tool_use':
-          if (event.toolCall) {
-            roundToolCalls.push(event.toolCall)
-            yield {
-              type: 'tool-use-start',
-              toolCallId: event.toolCall.id,
-              name: event.toolCall.name,
-              input: event.toolCall.input,
+    try {
+      for await (const event of stream) {
+        switch (event.type) {
+          case 'text':
+            if (event.text) {
+              roundText += event.text
+              yield { type: 'text', text: event.text }
             }
-          }
-          break
-        case 'error':
-          yield { type: 'error', message: event.error || 'Unknown LLM error' }
-          return
-        case 'done':
-          if (event.usage) {
-            roundUsage = event.usage
-          }
-          break
+            break
+          case 'reasoning':
+            if (event.reasoning) {
+              roundReasoning += event.reasoning
+              yield { type: 'reasoning', text: event.reasoning }
+            }
+            break
+          case 'tool_use':
+            if (event.toolCall) {
+              roundToolCalls.push(event.toolCall)
+              yield {
+                type: 'tool-use-start',
+                toolCallId: event.toolCall.id,
+                name: event.toolCall.name,
+                input: event.toolCall.input,
+              }
+            }
+            break
+          case 'error':
+            yield { type: 'error', message: event.error || 'Unknown LLM error' }
+            return
+          case 'done':
+            if (event.usage) {
+              roundUsage = event.usage
+            }
+            break
+        }
       }
+    } catch (streamErr: any) {
+      logger.error(`[RoundExecutor] Stream iteration error in round ${round}:`, streamErr?.message, streamErr?.stack)
+      yield { type: 'error', message: streamErr?.message || 'Stream iteration failed' }
+      return
     }
 
     // Save assistant message
@@ -229,7 +235,7 @@ export async function* executeRound(
       const currentAssistant = messages[messages.length - 1]
       const assistantHasMeaningfulText =
         currentAssistant?.role === 'assistant' &&
-        currentAssistant.content?.trim().length > 20
+        (currentAssistant.content || '').trim().length > 20
 
       messages.pop()
 

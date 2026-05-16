@@ -34,7 +34,13 @@ type Input = z.infer<typeof inputSchema>
 
 export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; exitCode: number }> = {
   name: 'executeCommand',
-  description: 'Execute a shell command in the workspace directory. NOTE: npm/bun/yarn/pnpm install commands are automatically routed to the .note_agent/ subdirectory to avoid polluting the workspace root with node_modules.',
+  description: (() => {
+    const isWin = process.platform === 'win32'
+    const shellInfo = isWin
+      ? 'Current platform: Windows. Use cmd/PowerShell syntax. mkdir works without -p. Use forward slashes (/) or escaped backslashes (\\\\) in paths. Avoid bash-specific syntax.'
+      : 'Current platform: Unix-like. Standard bash syntax applies.'
+    return 'Execute a shell command in the workspace directory. ' + shellInfo + ' NOTE: npm/bun/yarn/pnpm install commands are automatically routed to the .note_agent/ subdirectory to avoid polluting the workspace root with node_modules.'
+  })(),
   inputSchema,
   aliases: ['bash'],
 
@@ -79,7 +85,6 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
       const installPattern = /^\s*(npm\s+(install|i)\b|bun\s+install\b|yarn\s+(add|install)\b|pnpm\s+(add|install)\b)/
       if (installPattern.test(input.command)) {
         execOptions.cwd = join(ctx.workspacePath, '.note_agent')
-        console.log(`[executeCommand] Routing install command to .note_agent: ${input.command}`)
       }
 
       // On Windows, route through user-selected shell env (Git Bash / WSL / native)

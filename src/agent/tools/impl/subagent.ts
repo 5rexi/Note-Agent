@@ -235,6 +235,7 @@ export const SubagentTool: Tool<Input, string> = {
   },
 
   renderToolUse(input) {
-    return `Subagent: "${input.task.slice(0, 60)}..." (mode: ${input.mode ?? 'explore'})`
+    const task = typeof input.task === 'string' ? input.task : ''
+    return `Subagent: "${task.slice(0, 60)}..." (mode: ${input.mode ?? 'explore'})`
   },
 }

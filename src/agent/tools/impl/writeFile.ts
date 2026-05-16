@@ -24,18 +24,21 @@ export const WriteFileTool: Tool<Input, { path: string; bytes: number }> = {
   isDestructive() { return true },
 
   checkPermissions(input, ctx) {
+    // Defensive: input may be malformed/truncated from the LLM
+    const path = typeof input.path === 'string' ? input.path : '(unknown)'
+    const content = typeof input.content === 'string' ? input.content : ''
     // Warn about suspiciously short content (likely a placeholder)
-    if (input.content.length < 20 && !input.path.includes('test') && !input.path.includes('temp')) {
+    if (content.length < 20 && !path.includes('test') && !path.includes('temp')) {
       return {
         result: 'ask',
-        description: `Write file: ${input.path} — Content is only ${input.content.length} bytes ("${input.content.slice(0, 40)}"). This looks like a placeholder. Continue?`,
+        description: `Write file: ${path} — Content is only ${content.length} bytes ("${content.slice(0, 40)}"). This looks like a placeholder. Continue?`,
       }
     }
     // ASK 模式需要确认
     if (ctx.mode === 'ask') {
       return {
         result: 'ask',
-        description: `Write file: ${input.path} (${input.content.length} bytes)`,
+        description: `Write file: ${path} (${content.length} bytes)`,
       }
     }
     if (ctx.mode === 'explore') {
@@ -87,6 +90,8 @@ export const WriteFileTool: Tool<Input, { path: string; bytes: number }> = {
   },
 
   renderToolUse(input) {
-    return `Write file: ${input.path} (${input.content.length} bytes)`
+    const path = typeof input.path === 'string' ? input.path : '(unknown)'
+    const content = typeof input.content === 'string' ? input.content : ''
+    return `Write file: ${path} (${content.length} bytes)`
   },
 }

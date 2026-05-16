@@ -27,7 +27,15 @@ export function mergeAssistantMessages(msgs: any[]): any[] {
     const content = (msg.content || '').trim()
     const hasContent = content !== ''
     const isShortBridge = hasContent && content.length <= 120
-    const hasToolCalls = msg.tool_calls && JSON.parse(msg.tool_calls).length > 0
+    let hasToolCalls = false
+    if (msg.tool_calls && typeof msg.tool_calls === 'string') {
+      try {
+        const parsed = JSON.parse(msg.tool_calls)
+        hasToolCalls = Array.isArray(parsed) && parsed.length > 0
+      } catch {
+        hasToolCalls = false
+      }
+    }
 
     // If this assistant has substantial content (not a short bridge) and
     // no tool_calls, keep it standalone. Tool-carrying assistants are
@@ -39,7 +47,13 @@ export function mergeAssistantMessages(msgs: any[]): any[] {
     }
 
     // Accumulate tool_calls from this (empty or short-bridge) assistant
-    const accumulatedTC: any[] = msg.tool_calls ? JSON.parse(msg.tool_calls) : []
+    let accumulatedTC: any[] = []
+    if (msg.tool_calls && typeof msg.tool_calls === 'string') {
+      try {
+        const parsed = JSON.parse(msg.tool_calls)
+        if (Array.isArray(parsed)) accumulatedTC = parsed
+      } catch { /* ignore invalid JSON */ }
+    }
     let j = i + 1
 
     // Skip over tool results and any further empty/short-bridge assistants
@@ -49,14 +63,29 @@ export function mergeAssistantMessages(msgs: any[]): any[] {
         j++
       } else if (next.role === 'assistant') {
         const nextContent = (next.content || '').trim()
-        const nextHasToolCalls = next.tool_calls && JSON.parse(next.tool_calls).length > 0
+        let nextHasToolCalls = false
+        if (next.tool_calls && typeof next.tool_calls === 'string') {
+          try {
+            const parsed = JSON.parse(next.tool_calls)
+            nextHasToolCalls = Array.isArray(parsed) && parsed.length > 0
+          } catch {
+            nextHasToolCalls = false
+          }
+        }
         // Only skip empty or short-bridge assistants.  Any assistant with
         // substantial content (>120 chars) is a merge TARGET, regardless of
         // whether it also carries tool_calls.
         if (nextContent.length > 120) {
           break
         }
-        if (next.tool_calls) accumulatedTC.push(...JSON.parse(next.tool_calls))
+        if (next.tool_calls && typeof next.tool_calls === 'string') {
+          try {
+            const parsed = JSON.parse(next.tool_calls)
+            if (Array.isArray(parsed)) accumulatedTC.push(...parsed)
+          } catch {
+            // ignore invalid tool_calls JSON
+          }
+        }
         j++
       } else {
         break
@@ -66,7 +95,15 @@ export function mergeAssistantMessages(msgs: any[]): any[] {
     // If we found a following substantial assistant, merge everything into it
     if (j < msgs.length && msgs[j].role === 'assistant') {
       const target = msgs[j]
-      const targetTC = target.tool_calls ? JSON.parse(target.tool_calls) : []
+      let targetTC: any[] = []
+      if (target.tool_calls && typeof target.tool_calls === 'string') {
+        try {
+          targetTC = JSON.parse(target.tool_calls)
+          if (!Array.isArray(targetTC)) targetTC = []
+        } catch {
+          targetTC = []
+        }
+      }
       const mergedContent = (isShortBridge || hasToolCalls) && !target.content?.includes(content)
         ? `${content}\n\n${target.content || ''}`
         : target.content
@@ -89,7 +126,15 @@ export function mergeAssistantMessages(msgs: any[]): any[] {
       for (let k = result.length - 1; k >= 0; k--) {
         const prev = result[k]
         if (prev.role === 'assistant' && (prev.content || '').trim() !== '') {
-          const prevTC = prev.tool_calls ? JSON.parse(prev.tool_calls) : []
+          let prevTC: any[] = []
+          if (prev.tool_calls && typeof prev.tool_calls === 'string') {
+            try {
+              prevTC = JSON.parse(prev.tool_calls)
+              if (!Array.isArray(prevTC)) prevTC = []
+            } catch {
+              prevTC = []
+            }
+          }
           const mergedContent = (isShortBridge || hasToolCalls) && !prev.content?.includes(content)
             ? `${prev.content}\n\n${content}`
             : prev.content

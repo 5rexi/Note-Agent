@@ -88,6 +88,16 @@ export default function WordViewer({ filePath }: WordViewerProps) {
         useBase64URL: true,
       })
 
+      // Enhance MathML formula rendering: add font-family and size to <math> elements
+      if (containerRef.current) {
+        const mathElements = containerRef.current.querySelectorAll('math')
+        mathElements.forEach((math) => {
+          const el = math as HTMLElement
+          el.style.fontFamily = '"Cambria Math", "Latin Modern Math", "STIX Two Math", serif'
+          el.style.fontSize = '1.05em'
+        })
+      }
+
       // Inject data-p-index into all <p> tags inside <article> for paragraph editing.
       // We scope to <article> to avoid header/footer/footnote paragraphs which live
       // outside the body content and would skew the index mapping.

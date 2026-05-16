@@ -46,11 +46,12 @@ export const DoneTool: Tool<Input, { done: true }> = {
   async call(input, _ctx): Promise<ToolResult<{ done: true }>> {
     return {
       data: { done: true },
-      preview: input.summary ? `Task complete: ${input.summary.slice(0, 80)}` : 'Task complete',
+      preview: typeof input.summary === 'string' ? `Task complete: ${input.summary.slice(0, 80)}` : 'Task complete',
     }
   },
 
   renderToolUse(input) {
-    return input.summary ? `Done: ${input.summary.slice(0, 60)}` : 'Done'
+    const summary = typeof input.summary === 'string' ? input.summary : ''
+    return summary ? `Done: ${summary.slice(0, 60)}` : 'Done'
   },
 }

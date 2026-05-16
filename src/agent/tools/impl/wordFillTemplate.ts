@@ -143,7 +143,10 @@ export const WordFillTemplateTool: Tool<Input, { filePath: string; paragraphsIns
   },
 
   renderToolUse(input) {
-    return `wordFillTemplate ${input.filePath} ${input.anchorPath} (${input.content.length} chars)`
+    const filePath = typeof input.filePath === 'string' ? input.filePath : '(unknown)'
+    const anchorPath = typeof input.anchorPath === 'string' ? input.anchorPath : '(unknown)'
+    const content = typeof input.content === 'string' ? input.content : ''
+    return `wordFillTemplate ${filePath} ${anchorPath} (${content.length} chars)`
   },
 }
 
@@ -178,9 +181,24 @@ function parseMarkdown(md: string): MdParagraph[] {
       continue
     }
 
-    // Formula block $$...$$
-    if (line.trim().startsWith('$$')) {
-      const latex = line.trim().replace(/^\$\$/, '').replace(/\$\$$/, '')
+    // Formula block $$...$$ (supports both single-line and multi-line)
+    if (line.trim() === '$$') {
+      // Multi-line block: $$ on its own line, read until closing $$
+      let latex = ''
+      i++ // skip opening $$
+      while (i < lines.length && lines[i].trim() !== '$$') {
+        latex += lines[i] + '\n'
+        i++
+      }
+      if (latex.trim()) {
+        blocks.push({ type: 'formula', latex: latex.trim() })
+      }
+      i++ // skip closing $$
+      continue
+    }
+    if (line.trim().startsWith('$$') && line.trim().endsWith('$$') && line.trim().length > 4) {
+      // Single-line block: $$formula$$
+      const latex = line.trim().slice(2, -2)
       if (latex) {
         blocks.push({ type: 'formula', latex: latex.trim() })
       }
