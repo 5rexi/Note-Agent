@@ -15,6 +15,8 @@ import { tmpdir } from 'os'
 import JSZip from 'jszip'
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom'
 
+const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
 /** Strip XML 1.0 illegal characters.
  *  Valid: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
  *  Illegal control chars + UTF-16 surrogates + #xFFFE/#xFFFF
@@ -332,11 +334,11 @@ export async function replaceParagraphText(
       }
 
       // 4. Create a fresh run with the merged rPr and new text
-      const newRun = doc.createElement('w:r')
+      const newRun = doc.createElementNS(WORD_NS, 'w:r')
       if (bestRPr) {
         newRun.appendChild(bestRPr as any)
       }
-      const newTextNode = doc.createElement('w:t')
+      const newTextNode = doc.createElementNS(WORD_NS, 'w:t')
       newTextNode.textContent = sanitizedNewText
       if (/^\s+|\s+$/.test(sanitizedNewText)) {
         newTextNode.setAttribute('xml:space', 'preserve')
@@ -356,8 +358,8 @@ export async function replaceParagraphText(
         oldParagraph.appendChild(pPr.cloneNode(true))
       }
 
-      const newRun = doc.createElement('w:r')
-      const newTextNode = doc.createElement('w:t')
+      const newRun = doc.createElementNS(WORD_NS, 'w:r')
+      const newTextNode = doc.createElementNS(WORD_NS, 'w:t')
       newTextNode.textContent = sanitizedNewText
       if (/^\s+|\s+$/.test(sanitizedNewText)) {
         newTextNode.setAttribute('xml:space', 'preserve')
@@ -436,7 +438,7 @@ function removeChildIfExists(parent: Element, tagName: string): void {
 function ensureRPr(run: Element, doc: Document): Element {
   let rPr = run.getElementsByTagName('w:rPr')[0]
   if (!rPr) {
-    rPr = doc.createElement('w:rPr')
+    rPr = doc.createElementNS(WORD_NS, 'w:rPr')
     run.insertBefore(rPr, run.firstChild)
   }
   return rPr
@@ -625,17 +627,17 @@ export async function addParagraphText(
       }
     }
 
-    const newParagraph = doc.createElement('w:p')
+    const newParagraph = doc.createElementNS(WORD_NS, 'w:p')
     if (pPr) {
       newParagraph.appendChild(pPr)
     }
 
-    const newRun = doc.createElement('w:r')
+    const newRun = doc.createElementNS(WORD_NS, 'w:r')
     if (rPr) {
       newRun.appendChild(rPr)
     }
 
-    const newTextNode = doc.createElement('w:t')
+    const newTextNode = doc.createElementNS(WORD_NS, 'w:t')
     const sanitizedText = sanitizeXmlString(text)
     if (/^\s+|\s+$/.test(sanitizedText)) {
       newTextNode.setAttribute('xml:space', 'preserve')
@@ -877,7 +879,7 @@ function applyFormatToParagraph(paragraph: any, changes: FormatChange[], doc: an
   for (const change of changes) {
     if (change.property === 'headingLevel' || change.property === 'alignment' || change.property === 'indentation') {
       if (!pPr) {
-        pPr = doc.createElement('w:pPr')
+        pPr = doc.createElementNS(WORD_NS, 'w:pPr')
         paragraph.insertBefore(pPr, paragraph.firstChild as any)
       }
       setParagraphPPr(pPr, change, doc)

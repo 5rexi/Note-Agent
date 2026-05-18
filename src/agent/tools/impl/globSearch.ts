@@ -28,6 +28,10 @@ export const GlobSearchTool: Tool<Input, string[]> = {
   },
 
   async call(input, ctx: ToolContext): Promise<ToolResult<string[]>> {
+    // Reject absolute patterns that would escape the workspace
+    if (input.pattern.startsWith('/') || (process.platform === 'win32' && /^[A-Za-z]:/.test(input.pattern))) {
+      return { data: [], error: 'Absolute patterns are not allowed' }
+    }
     const matches = globSync(input.pattern, { cwd: ctx.workspacePath, nodir: true })
     return { data: matches }
   },

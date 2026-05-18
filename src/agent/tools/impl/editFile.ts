@@ -54,6 +54,9 @@ export const EditFileTool: Tool<Input, { path: string; replacements: number }> =
     }
 
     const content = readFileSync(filePath, 'utf-8')
+    if (input.search === '') {
+      return { data: { path: input.path, replacements: 0 }, error: `Search text cannot be empty` }
+    }
     if (!content.includes(input.search)) {
       return { data: { path: input.path, replacements: 0 }, error: `Search text not found in ${input.path}` }
     }

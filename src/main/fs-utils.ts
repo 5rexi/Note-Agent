@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
-import { readFileSync, writeFileSync, readdirSync, renameSync, unlinkSync, rmdirSync, statSync, existsSync, copyFileSync } from 'fs'
+import { readFileSync, writeFileSync, readdirSync, renameSync, unlinkSync, rmdirSync, statSync, existsSync, copyFileSync, realpathSync } from 'fs'
 import { join, resolve, relative, sep, basename, normalize } from 'path'
+import { homedir } from 'os'
 
 function writeFileFromBase64(filePath: string, base64Data: string): void {
   const buffer = Buffer.from(base64Data, 'base64')
@@ -15,8 +16,43 @@ function readFileAsBase64(filePath: string): string {
 function isPathInside(targetPath: string, rootPath: string): boolean {
   const resolvedTarget = resolve(targetPath)
   const resolvedRoot = resolve(rootPath)
+
+  // Windows: different drives = definitely outside
+  if (process.platform === 'win32') {
+    const tDrive = resolvedTarget.match(/^([A-Za-z]:)/)?.[1]
+    const rDrive = resolvedRoot.match(/^([A-Za-z]:)/)?.[1]
+    if (tDrive && rDrive && tDrive.toLowerCase() !== rDrive.toLowerCase()) {
+      return false
+    }
+  }
+
   const rel = relative(resolvedRoot, resolvedTarget)
   return !rel.startsWith('..') && !rel.startsWith(sep)
+}
+
+function getAllowedRoots(): string[] {
+  const db = getDb()
+  if (db) {
+    try {
+      const workspaces = (db as any).listWorkspaces?.() || []
+      const paths = workspaces.map((w: any) => w.path).filter(Boolean)
+      if (paths.length > 0) return paths
+    } catch {}
+  }
+  return [homedir()]
+}
+
+function assertPathAllowed(filePath: string): void {
+  const roots = getAllowedRoots()
+  const resolved = resolve(filePath)
+  // Also resolve symlinks to prevent symlink-based escapes
+  let realTarget: string
+  try { realTarget = realpathSync(resolved) } catch { realTarget = resolved }
+
+  const allowed = roots.some((root) => isPathInside(realTarget, root) || resolve(realTarget) === resolve(root))
+  if (!allowed) {
+    throw new Error(`Path not allowed: ${filePath}`)
+  }
 }
 
 const ILLEGAL_NAME_CHARS = /[<>"|?*\x00-\x1f]/
@@ -39,6 +75,10 @@ function isSuspiciousFileName(name: string): boolean {
 
 function validateFilePath(filePath: string): string {
   const norm = normalize(filePath)
+  // Block path traversal sequences
+  if (norm.split(sep).some((part) => part === '..')) {
+    throw new Error(`Path traversal not allowed: ${filePath}`)
+  }
   const fileName = basename(norm)
   if (ILLEGAL_NAME_CHARS.test(fileName)) {
     throw new Error(`File name contains illegal characters: ${fileName}`)
@@ -84,10 +124,10 @@ export function registerFsHandlers() {
         if (db) {
           if (isBinaryFile(normPath)) {
             const current = readFileSync(normPath)
-            db.pushFileHistory(normPath, current.toString('base64'))
+            db.pushFileHistory(normPath, current.toString('base64'), true)
           } else {
             const current = readFileSync(normPath, 'utf-8')
-            db.pushFileHistory(normPath, current)
+            db.pushFileHistory(normPath, current, false)
           }
         }
       }
@@ -198,7 +238,7 @@ export function registerFsHandlers() {
         const current = readFileSync(normPath)
         const db = getDb()
         if (db) {
-          db.pushFileHistory(normPath, current.toString('base64'))
+          db.pushFileHistory(normPath, current.toString('base64'), true)
         }
       }
       writeFileFromBase64(normPath, base64Data)
@@ -218,10 +258,8 @@ export function registerFsHandlers() {
       if (!history) {
         return { success: false, error: '没有可撤销的历史' }
       }
-      // Binary files are stored as base64; text files as utf-8 strings.
-      // Try base64 decoding first — if it round-trips cleanly, treat as binary.
-      const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(history.content) && history.content.length % 4 === 0 && history.content.length > 100
-      if (isBase64 && isBinaryFile(filePath)) {
+      // Use the stored isBinary flag if available; fall back to extension check
+      if (history.isBinary ?? isBinaryFile(filePath)) {
         const buffer = Buffer.from(history.content, 'base64')
         writeFileSync(filePath, buffer)
       } else {

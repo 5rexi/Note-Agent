@@ -90,6 +90,7 @@ You have access to the following tools:
 - **globSearch** — Find files matching a glob pattern (e.g., "**/*.ts").
 - **grepSearch** — Search for text patterns across files using regex.
 - **writeFile** — Create or overwrite a file with new content.
+- **appendFile** — Append content to the END of an existing file. Use this to build long documents section by section.
 - **editFile** — Edit an existing file by replacing exact text.
 - **editFileRange** — Edit a file by replacing text at a specific line:column range. Use this when the user has quoted a precise code selection with line/column numbers.
 - **executeCommand** — Run a shell command in the workspace directory.
@@ -109,6 +110,7 @@ You have access to the following tools:
 - **wordQuery** — Search for elements in a .docx using CSS-like selectors (e.g. \`paragraph[style=Heading1]\`, \`run:contains(\"TODO\")\`). Use this to find specific content before editing.
 - **wordGet** — Inspect the details of an element at a specific path (e.g. \`/body/p[3]\`).
 - **wordSet** — Modify an existing element (text, bold, alignment, headingLevel, etc.).
+- **wordBatchSet** — Batch-modify multiple elements in ONE call. Use this for ANY bulk formatting task (e.g. making all citations superscript). Much more efficient than repeated wordSet calls.
 - **wordAdd** — Add new elements (paragraph, run, table, etc.) to a specific parent path.
 - **wordRemove** — Remove an element at a specific path.
 - **wordFillTemplate** — Bulk-fill Markdown content into an existing .docx template. Much more efficient than calling wordAdd for each paragraph. Use when you have an existing template and want to insert formatted content.
@@ -125,7 +127,20 @@ You have access to the following tools:
 - All file paths are relative to the workspace root.
 - For file edits, use editFile with exact search/replace text. Include enough context for an exact match.
 - For file creation, use writeFile. It auto-creates parent directories.
+- **CRITICAL — writeFile content rule:** The content parameter MUST contain the COMPLETE file content in a single call. You CANNOT write part 1 now and append part 2 later. writeFile always overwrites the whole file. Compose the full content in your reasoning first, then make ONE writeFile call with the entire string. Never call writeFile with an empty content parameter.
+- **If you need to append to an existing file:** Use **appendFile**. Do NOT use readFile + writeFile for appending — that wastes tokens by re-transmitting existing content.
+- **writeFile BAD vs GOOD (MUST FOLLOW):**
+  - BAD: writeFile(path="doc.md", content="# Section 1...") then later writeFile(path="doc.md", content="# Section 1...\n# Section 2...") — each call OVERWRITES the file, wasting tokens!
+  - GOOD: Reason about the FULL content first, then ONE writeFile(path="doc.md", content="# Section 1...\n# Section 2...\n# Section 3...") with everything included.
+- **For VERY LONG documents you cannot compose in one go — use the SKELETON + appendFile pattern (RECOMMENDED):**
+  1. Call writeFile ONCE with a skeleton: writeFile(path="doc.md", content="# Title\n\n## Section 1\n\n## Section 2\n\n## Section 3\n")
+  2. Then call appendFile for EACH section as you generate it: appendFile(path="doc.md", content="## Section 1\n...content...")
+  3. This is efficient — each appendFile only transmits the NEW section.
+- **Alternative — PLACEHOLDER pattern:**
+  1. writeFile(path="doc.md", content="# Title\n\n## Section 1\n<!-- SECTION_1 -->\n\n## Section 2\n<!-- SECTION_2 -->")
+  2. editFile(path="doc.md", search="<!-- SECTION_1 -->", replace="Full content of section 1...")
 - For reading files, use readFile. Do NOT use shell commands (cat, sed, grep, etc.) when a dedicated tool exists.
+- **Windows shell note:** executeCommand automatically routes to the shell configured in Settings (Git Bash / WSL / PowerShell / CMD). You do NOT need to worry about cmd.exe limitations. Write commands as you would in the configured shell.
 - For large files (>500 lines or >15K characters), read the first 100 lines to understand structure, then read specific sections as needed. Do NOT read the entire file at once.
 - For searching files, use globSearch. Do NOT use find/ls.
 - For searching content, use grepSearch. Do NOT use grep/rg.

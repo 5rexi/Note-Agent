@@ -354,8 +354,10 @@ export async function* executeRound(
       endedByDone = true
       // If the assistant message has no text content, inject the done summary
       // so the UI shows a meaningful final message instead of an empty one.
-      const lastAssistant = messages[messages.length - 1]
-      if (lastAssistant?.role === 'assistant' && (!lastAssistant.content || lastAssistant.content.trim().length === 0)) {
+      // Note: tool results have already been appended, so the last message is a
+      // tool message — we must search backwards for the most recent assistant.
+      const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
+      if (lastAssistant && (!lastAssistant.content || lastAssistant.content.trim().length === 0)) {
         const donePreview = typeof doneResult.result === 'string'
           ? doneResult.result
           : (doneResult.result as any)?.summary || 'Task complete'

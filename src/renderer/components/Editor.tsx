@@ -87,11 +87,12 @@ export default function FileEditor() {
   const editorRef = useRef<any>(null)
   const currentFileRef = useRef(currentFile)
   const workspaceRef = useRef(workspace)
+  const editorStateRef = useRef(editorState)
   const isProgrammaticChange = useRef(false)
   const loadAbortRef = useRef<AbortController | null>(null)
   const activeTabRef = useRef<HTMLButtonElement | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
-  const [syncScrollEnabled, setSyncScrollEnabled] = useState(false)
+  const [syncScrollEnabled, setSyncScrollEnabled] = useState(editorState.syncScrollEnabled ?? false)
   const [terminalVisible, setTerminalVisible] = useState(false)
   const [terminalPosition, setTerminalPosition] = useState<'top' | 'bottom'>('bottom')
   const terminalPanelRef = useRef<TerminalPanelHandle>(null)
@@ -129,6 +130,7 @@ export default function FileEditor() {
   // Keep refs in sync to avoid stale closures in Monaco actions
   useEffect(() => { currentFileRef.current = currentFile }, [currentFile])
   useEffect(() => { workspaceRef.current = workspace }, [workspace])
+  useEffect(() => { editorStateRef.current = editorState }, [editorState])
 
   // Scroll active tab into view when it changes
   useEffect(() => {
@@ -513,9 +515,12 @@ export default function FileEditor() {
   const closeTab = (e: React.MouseEvent, idx: number) => {
     e.stopPropagation()
     setEditorState((s) => {
+      const pathToClose = s.openFiles[idx]
       const newFiles = s.openFiles.filter((_, i) => i !== idx)
       const newIndex = Math.min(s.activeFileIndex, newFiles.length - 1)
-      return { ...s, openFiles: newFiles, activeFileIndex: Math.max(0, newIndex) }
+      const newFileStates = { ...s.fileStates }
+      if (pathToClose) delete newFileStates[pathToClose]
+      return { ...s, openFiles: newFiles, activeFileIndex: Math.max(0, newIndex), fileStates: newFileStates }
     })
   }
 
@@ -546,6 +551,66 @@ export default function FileEditor() {
     editorRef.current = editor
     editor.onDidChangeCursorPosition((e: any) => {
       setCursorPos({ line: e.position.lineNumber, column: e.position.column })
+      const fp = currentFileRef.current
+      if (!fp) return
+      setEditorState((s) => ({
+        ...s,
+        fileStates: {
+          ...s.fileStates,
+          [fp]: {
+            ...(s.fileStates[fp] || {}),
+            cursorLine: e.position.lineNumber,
+            cursorColumn: e.position.column,
+          },
+        },
+      }))
+    })
+    editor.onDidScrollChange((e: any) => {
+      const fp = currentFileRef.current
+      if (!fp) return
+      setEditorState((s) => ({
+        ...s,
+        fileStates: {
+          ...s.fileStates,
+          [fp]: {
+            ...(s.fileStates[fp] || {}),
+            scrollTop: e.scrollTop,
+          },
+        },
+      }))
+    })
+    // Restore scroll + cursor when model changes (tab switch).
+    // Delay with rAF + setTimeout so Monaco React's setValue() (which resets
+    // scroll to top) has already run before we restore the saved position.
+    editor.onDidChangeModel(() => {
+      const model = editor.getModel()
+      if (!model) return
+      const fsPath = model.uri.fsPath
+      const ws = workspaceRef.current
+      let state = editorStateRef.current.fileStates[fsPath]
+      if (!state && ws?.path) {
+        for (const [key, val] of Object.entries(editorStateRef.current.fileStates)) {
+          const keyFull = window.electronAPI.pathIsAbsolute(key)
+            ? key
+            : window.electronAPI.pathJoin(ws.path, key)
+          if (keyFull === fsPath) {
+            state = val
+            break
+          }
+        }
+      }
+      if (state) {
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            if (state!.scrollTop != null) {
+              editor.setScrollTop(state!.scrollTop)
+            }
+            if (state!.cursorLine != null) {
+              editor.setPosition({ lineNumber: state!.cursorLine, column: state!.cursorColumn || 1 })
+            }
+          }, 60)
+        })
+      }
     })
     // Load current file content if editor is ready but content hasn't been synced yet
     if (currentFileRef.current && workspaceRef.current) {
@@ -879,6 +944,42 @@ export default function FileEditor() {
   // Markdown 双窗格滚动同步
   useEditorPreviewScrollSync(editorRef.current, previewRef, view === 'split' && syncScrollEnabled && isMarkdown)
 
+  // Persist Markdown preview scroll position per file
+  useEffect(() => {
+    const preview = previewRef.current
+    if (!preview || !currentFile) return
+    const handler = () => {
+      setEditorState((s) => ({
+        ...s,
+        fileStates: {
+          ...s.fileStates,
+          [currentFile]: {
+            ...(s.fileStates[currentFile] || {}),
+            previewScrollTop: preview.scrollTop,
+          },
+        },
+      }))
+    }
+    preview.addEventListener('scroll', handler)
+    return () => preview.removeEventListener('scroll', handler)
+  }, [currentFile])
+
+  // Restore Markdown preview scroll when switching tabs / views
+  useEffect(() => {
+    const preview = previewRef.current
+    if (!preview || !currentFile || !isMarkdown) return
+    const state = editorState.fileStates[currentFile]
+    if (state?.previewScrollTop != null) {
+      const raf = requestAnimationFrame(() => {
+        const timer = setTimeout(() => {
+          preview.scrollTop = state.previewScrollTop!
+        }, 100)
+        return () => clearTimeout(timer)
+      })
+      return () => cancelAnimationFrame(raf)
+    }
+  }, [currentFile, view, isMarkdown])
+
   const handleEditorChange = (value: string | undefined) => {
     if (isProgrammaticChange.current) return
     setContent(value || '')
@@ -946,6 +1047,7 @@ export default function FileEditor() {
             onClick={() => {
               setSyncScrollEnabled((prev) => {
                 const next = !prev
+                setEditorState((s) => ({ ...s, syncScrollEnabled: next }))
                 if (next && editorRef.current && previewRef.current) {
                   // 打开时：右侧立即同步到左侧当前位置
                   const ed = editorRef.current

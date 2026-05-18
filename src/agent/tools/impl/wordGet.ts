@@ -4,7 +4,7 @@ import type { ToolResult } from '../../types'
 import { openDocx, closeDocx, resolvePath, getElementInfo } from '../../document'
 
 const inputSchema = z.object({
-  filePath: z.string().describe('Absolute path to the .docx file'),
+  filePath: z.string().describe('Path to the .docx file (relative to workspace or absolute)'),
   path: z.string().describe('Element path, e.g. /body/p[1] or /body/p[1]/r[1] or /body/tbl[1]'),
   depth: z.number().optional().describe('How many levels of children to include (default: 0 = target element only)'),
 })

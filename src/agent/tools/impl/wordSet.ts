@@ -3,12 +3,14 @@ import type { Tool, ToolContext } from '../Tool'
 import type { ToolResult } from '../../types'
 import { openDocx, saveDocx, closeDocx, resolvePath } from '../../document'
 
+const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
 const propSchema = z.record(z.string(), z.any()).describe(
   'Properties to set. Examples: { text: "New content" }, { bold: true, color: "FF0000" }, { alignment: "center" }, { headingLevel: 2 }'
 )
 
 const inputSchema = z.object({
-  filePath: z.string().describe('Absolute path to the .docx file'),
+  filePath: z.string().describe('Path to the .docx file (relative to workspace or absolute)'),
   path: z.string().describe('Element path, e.g. /body/p[1]/r[1] for a run, /body/p[1] for a paragraph'),
   props: propSchema,
 })
@@ -85,11 +87,12 @@ export const WordSetTool: Tool<Input, { filePath: string; path: string; props: R
 
       if (applied.length > 0) {
         doc.isDirty = true
-        // Save undo history
-        const originalBuffer = Buffer.from(docEl as any)
+        // Save undo history — serialize the DOM XML to string, then base64
+        const serializer = new (require('@xmldom/xmldom').XMLSerializer)()
+        const xmlStr = serializer.serializeToString(docEl)
         const db = (global as any).__db as { pushFileHistory?: (path: string, content: string) => void } | undefined
         if (db?.pushFileHistory) {
-          db.pushFileHistory(input.filePath, originalBuffer.toString('base64'))
+          db.pushFileHistory(input.filePath, Buffer.from(xmlStr).toString('base64'))
         }
 
         const saveResult = await saveDocx(doc)
@@ -133,7 +136,7 @@ function applyProperty(el: Element, key: string, value: any, doc: Document): boo
             t.setAttribute('xml:space', 'preserve')
           }
         } else {
-          const newT = doc.createElement('w:t')
+          const newT = doc.createElementNS(WORD_NS, 'w:t')
           newT.textContent = String(value)
           if (/^\s+|\s+$/.test(String(value))) {
             newT.setAttribute('xml:space', 'preserve')
@@ -147,8 +150,8 @@ function applyProperty(el: Element, key: string, value: any, doc: Document): boo
         const pPr = el.getElementsByTagName('w:pPr')[0]
         while (el.firstChild) el.removeChild(el.firstChild)
         if (pPr) el.appendChild(pPr)
-        const newRun = doc.createElement('w:r')
-        const newT = doc.createElement('w:t')
+        const newRun = doc.createElementNS(WORD_NS, 'w:r')
+        const newT = doc.createElementNS(WORD_NS, 'w:t')
         newT.textContent = String(value)
         if (/^\s+|\s+$/.test(String(value))) {
           newT.setAttribute('xml:space', 'preserve')
@@ -269,7 +272,7 @@ function ensureRPr(el: Element, doc: Document): Element {
   if (el.tagName === 'w:r') {
     let rPr = el.getElementsByTagName('w:rPr')[0]
     if (!rPr) {
-      rPr = doc.createElement('w:rPr')
+      rPr = doc.createElementNS(WORD_NS, 'w:rPr')
       el.insertBefore(rPr, el.firstChild)
     }
     return rPr
@@ -278,12 +281,12 @@ function ensureRPr(el: Element, doc: Document): Element {
   // For simplicity, create a new run with rPr if none exist
   let rPr = el.getElementsByTagName('w:rPr')[0]
   if (!rPr) {
-    rPr = doc.createElement('w:rPr')
+    rPr = doc.createElementNS(WORD_NS, 'w:rPr')
     // If element is a paragraph, we can't attach rPr directly. Find/create first run.
     if (el.tagName === 'w:p') {
       let run = el.getElementsByTagName('w:r')[0]
       if (!run) {
-        run = doc.createElement('w:r')
+        run = doc.createElementNS(WORD_NS, 'w:r')
         el.appendChild(run)
       }
       run.insertBefore(rPr, run.firstChild)
@@ -297,7 +300,7 @@ function ensureRPr(el: Element, doc: Document): Element {
 function ensurePPr(el: Element, doc: Document): Element {
   let pPr = el.getElementsByTagName('w:pPr')[0]
   if (!pPr) {
-    pPr = doc.createElement('w:pPr')
+    pPr = doc.createElementNS(WORD_NS, 'w:pPr')
     el.insertBefore(pPr, el.firstChild)
   }
   return pPr
@@ -306,7 +309,7 @@ function ensurePPr(el: Element, doc: Document): Element {
 function getOrCreateChild(parent: Element, tagName: string, doc: Document): Element {
   let el = parent.getElementsByTagName(tagName)[0]
   if (!el) {
-    el = doc.createElement(tagName)
+    el = doc.createElementNS(WORD_NS, tagName)
     parent.appendChild(el)
   }
   return el
@@ -318,3 +321,5 @@ function removeChildIfExists(parent: Element, tagName: string): void {
     parent.removeChild(existing)
   }
 }
+
+export { applyProperty }

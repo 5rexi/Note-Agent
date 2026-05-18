@@ -258,16 +258,23 @@ ipcMain.handle('app:setZoomFactor', (_e, factor: number) => {
   if (wc) wc.setZoomFactor(factor)
 })
 
-app.on('before-quit', async () => {
-  try {
-    await browserHost.shutdown()
-  } catch {
-    // ignore
-  }
+app.on('before-quit', (e) => {
+  e.preventDefault()
+  Promise.resolve()
+    .then(async () => {
+      try { await browserHost.shutdown() } catch {}
+      try { db.close() } catch {}
+    })
+    .finally(() => {
+      app.exit(0)
+    })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    try { db.close() } catch {}
+    app.quit()
+  }
 })
 
 // ── Database IPC handlers ──

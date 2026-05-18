@@ -3,6 +3,7 @@
  * 参考 design.md "Advanced Tooling" / "Indexer"
  */
 import { z } from 'zod'
+import { readFileSync } from 'fs'
 import type { Tool, ToolContext, ToolResult } from '../Tool'
 
 const inputSchema = z.object({
@@ -45,7 +46,7 @@ export class IndexerTool implements Tool<z.infer<typeof inputSchema>, unknown> {
       for (const filePath of input.files || []) {
         try {
           const fullPath = ctx.workspacePath ? `${ctx.workspacePath}/${filePath}` : filePath
-          const content = await Bun.file(fullPath).text()
+          const content = readFileSync(fullPath, 'utf-8')
           entries.push({ path: filePath, content, tokens: Math.ceil(content.length / 4) })
         } catch {
           // Skip unreadable files

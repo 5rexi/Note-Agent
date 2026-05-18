@@ -33,18 +33,61 @@ export class HttpTool implements Tool<z.infer<typeof inputSchema>, { status: num
   }
 
   async call(input: z.infer<typeof inputSchema>): Promise<ToolResult<{ status: number; body: string; headers: Record<string, string> }>> {
-    const response = await fetch(input.url, {
-      method: input.method,
-      headers: input.headers as Record<string, string>,
-      body: input.body,
-    })
+    // SSRF protection: block internal/private IP ranges and file:// protocol
+    const urlStr = input.url.trim()
+    let urlObj: URL
+    try {
+      urlObj = new URL(urlStr)
+    } catch {
+      return { data: { status: 0, body: '', headers: {} }, error: `Invalid URL: ${urlStr}` }
+    }
 
-    const body = await response.text()
-    const headers: Record<string, string> = {}
-    response.headers.forEach((v, k) => { headers[k] = v })
+    const blockedProtocols = ['file:', 'ftp:', 'gopher:', 'data:']
+    if (blockedProtocols.includes(urlObj.protocol)) {
+      return { data: { status: 0, body: '', headers: {} }, error: `Protocol not allowed: ${urlObj.protocol}` }
+    }
 
-    return {
-      data: { status: response.status, body, headers },
+    const hostname = urlObj.hostname.toLowerCase()
+    // Block localhost and private IP ranges
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname.startsWith('127.') ||
+      hostname.startsWith('10.') ||
+      hostname.startsWith('172.') ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('169.254.') ||
+      hostname === '0.0.0.0'
+    ) {
+      return { data: { status: 0, body: '', headers: {} }, error: `Access to internal addresses is not allowed: ${hostname}` }
+    }
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+
+    try {
+      const response = await fetch(input.url, {
+        method: input.method,
+        headers: input.headers as Record<string, string>,
+        body: input.body,
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+
+      const body = await response.text()
+      const headers: Record<string, string> = {}
+      response.headers.forEach((v, k) => { headers[k] = v })
+
+      return {
+        data: { status: response.status, body, headers },
+      }
+    } catch (err: any) {
+      clearTimeout(timeoutId)
+      if (err.name === 'AbortError') {
+        return { data: { status: 0, body: '', headers: {} }, error: 'Request timed out after 30s' }
+      }
+      return { data: { status: 0, body: '', headers: {} }, error: `HTTP request failed: ${err.message}` }
     }
   }
 

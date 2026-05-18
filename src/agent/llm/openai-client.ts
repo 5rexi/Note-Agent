@@ -21,6 +21,7 @@ import {
 /**
  * AbortSignal.any polyfill for environments where it is missing (older Electron,
  * some Bun builds). Falls back to manually forwarding abort events.
+ * All added listeners are cleaned up when the composite signal aborts.
  */
 function abortSignalAny(signals: AbortSignal[]): AbortSignal {
   if (typeof AbortSignal !== 'undefined' && 'any' in AbortSignal) {
@@ -32,13 +33,25 @@ function abortSignalAny(signals: AbortSignal[]): AbortSignal {
   }
   const ctrl = new AbortController()
   const onAbort = () => { ctrl.abort() }
+
+  const cleanup = () => {
+    for (const s of signals) {
+      s.removeEventListener('abort', onAbort)
+    }
+  }
+
   for (const s of signals) {
     if (s.aborted) {
       ctrl.abort()
+      cleanup()
       break
     }
     s.addEventListener('abort', onAbort, { once: true })
   }
+
+  // Clean up all source listeners when the composite signal aborts
+  ctrl.signal.addEventListener('abort', cleanup, { once: true })
+
   return ctrl.signal
 }
 

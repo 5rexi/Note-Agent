@@ -4,8 +4,9 @@
 import { z } from 'zod'
 import type { Tool, ToolContext } from '../Tool'
 import type { ToolResult } from '../../types'
-import { readdirSync, readFileSync, statSync } from 'fs'
-import { join, relative } from 'path'
+import { readdirSync, readFileSync, statSync, realpathSync } from 'fs'
+import { join, relative, resolve } from 'path'
+import { safePath } from '../../utils/fs-guard'
 
 const inputSchema = z.object({
   pattern: z.string().describe('Regex pattern to search for'),
@@ -84,7 +85,7 @@ export const GrepSearchTool: Tool<Input, GrepMatch[]> = {
       const target = input.path || '.'
       const results: GrepMatch[] = []
 
-      const targetPath = join(ctx.workspacePath, target)
+      const targetPath = safePath(target, ctx.workspacePath)
       const stat = statSync(targetPath)
 
       if (stat.isFile()) {

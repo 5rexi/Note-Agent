@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { Loader2, FileText, AlertCircle, RefreshCw, List, ExternalLink, Quote, Undo } from 'lucide-react'
 import { toast } from 'sonner'
 import { renderAsync } from 'docx-preview'
-import { themeAtom } from '../../atoms'
+import { themeAtom, editorStateAtom } from '../../atoms'
 
 interface WordViewerProps {
   filePath: string
@@ -21,6 +21,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 export default function WordViewer({ filePath }: WordViewerProps) {
   const theme = useAtomValue(themeAtom)
   const isDark = theme === 'dark'
+  const [editorState, setEditorState] = useAtom(editorStateAtom)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showStructure, setShowStructure] = useState(false)
@@ -127,9 +128,30 @@ export default function WordViewer({ filePath }: WordViewerProps) {
     }
   }, [filePath, isDoc])
 
-  // Trigger document load when filePath changes
+  // Persist Word viewer scroll position
   useEffect(() => {
-    loadDocument()
+    const scrollContainer = containerRef.current?.parentElement
+    if (!scrollContainer) return
+    const handler = () => {
+      setEditorState((s) => ({
+        ...s,
+        fileStates: {
+          ...s.fileStates,
+          [filePath]: {
+            ...(s.fileStates[filePath] || {}),
+            scrollTop: scrollContainer.scrollTop,
+          },
+        },
+      }))
+    }
+    scrollContainer.addEventListener('scroll', handler)
+    return () => scrollContainer.removeEventListener('scroll', handler)
+  }, [filePath])
+
+  // Trigger document load when filePath changes, restoring saved scroll
+  useEffect(() => {
+    const savedScroll = editorState.fileStates[filePath]?.scrollTop
+    loadDocument(savedScroll)
   }, [loadDocument])
 
   // Cleanup rendered content on unmount

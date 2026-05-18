@@ -45,7 +45,11 @@ const SYMBOL_MAP: Record<string, string> = {
   Rightarrow: '⇒', Leftarrow: '⇐', leftrightarrow: '↔', iff: '⇔',
   sum: '∑', prod: '∏', int: '∫', iint: '∬', iiint: '∭', oint: '∮',
   bigcup: '⋃', bigcap: '⋂', lim: 'lim', sin: 'sin', cos: 'cos', tan: 'tan',
+  lfloor: '⌊', rfloor: '⌋', lceil: '⌈', rceil: '⌉',
+  langle: '⟨', rangle: '⟩', lbrace: '{', rbrace: '}', vert: '|', Vert: '‖', backslash: '\\',
   cot: 'cot', sec: 'sec', csc: 'csc', arcsin: 'arcsin', arccos: 'arccos',
+  // Spacing and operators
+  quad: '\u2003', qquad: '\u2003\u2003', oplus: '⊕', ominus: '⊖', otimes: '⊗', oslash: '⊘',
   arctan: 'arctan', sinh: 'sinh', cosh: 'cosh', tanh: 'tanh', log: 'log',
   ln: 'ln', exp: 'exp', det: 'det', dim: 'dim', ker: 'ker', hom: 'hom',
   max: 'max', min: 'min', sup: 'sup', inf: 'inf', arg: 'arg', deg: 'deg',
@@ -147,6 +151,24 @@ export function parseLatex(latex: string): AstNode[] {
         if (peek().type === 'RBRACE') consume()
         return { type: 'group', children }
       }
+      // Treat plain parentheses / square brackets as implicit grouping
+      // so that (T^k)_{ii} applies the subscript to the whole (T^k).
+      if (t.type === 'TEXT' && (t.value === '(' || t.value === '[')) {
+        const open = t.value
+        const close = open === '(' ? ')' : ']'
+        consume()
+        const children: AstNode[] = []
+        while (peek().type !== 'EOF') {
+          if (stopAtRight && peek().type === 'CMD' && peek().value === 'right') break
+          if (peek().type === 'TEXT' && peek().value === close) {
+            consume()
+            return { type: 'cmd', name: 'bracket', args: [[{ type: 'text', text: open }, ...children, { type: 'text', text: close }]] }
+          }
+          children.push(parseExpr(stopAtRight))
+        }
+        // Unmatched — fall back to plain text for the opening bracket
+        return { type: 'text', text: open }
+      }
       if (t.type === 'CMD') {
         consume()
         if (stopAtRight && t.value === 'right') {
@@ -181,8 +203,8 @@ export function parseLatex(latex: string): AstNode[] {
         case 'left': {
           const delim = peek()
           let leftDelim = '('
-          if (delim.type === 'TEXT' || delim.type === 'LBRACE' || delim.type === 'RBRACE' || delim.type === 'LBRACKET' || delim.type === 'RBRACKET') {
-            leftDelim = delim.value
+          if (delim.type === 'TEXT' || delim.type === 'LBRACE' || delim.type === 'RBRACE' || delim.type === 'LBRACKET' || delim.type === 'RBRACKET' || delim.type === 'CMD') {
+            leftDelim = delim.type === 'CMD' ? '\\' + delim.value : delim.value
             consume()
           }
           const inner: AstNode[] = []
@@ -191,8 +213,8 @@ export function parseLatex(latex: string): AstNode[] {
               consume()
               const rightDelimToken = peek()
               let rightDelim = ')'
-              if (rightDelimToken.type === 'TEXT' || rightDelimToken.type === 'LBRACE' || rightDelimToken.type === 'RBRACE' || rightDelimToken.type === 'LBRACKET' || rightDelimToken.type === 'RBRACKET') {
-                rightDelim = rightDelimToken.value
+              if (rightDelimToken.type === 'TEXT' || rightDelimToken.type === 'LBRACE' || rightDelimToken.type === 'RBRACE' || rightDelimToken.type === 'LBRACKET' || rightDelimToken.type === 'RBRACKET' || rightDelimToken.type === 'CMD') {
+                rightDelim = rightDelimToken.type === 'CMD' ? '\\' + rightDelimToken.value : rightDelimToken.value
                 consume()
               }
               return { type: 'cmd', name: 'bracket', args: [[{ type: 'text', text: leftDelim }, ...inner, { type: 'text', text: rightDelim }]] }
@@ -205,7 +227,7 @@ export function parseLatex(latex: string): AstNode[] {
           args.push(parseGroupOrAtom(stopAtRight))
           break
         case 'text': case 'mathrm': case 'mathbf': case 'mathit': case 'mathcal': case 'mathbb': case 'mathfrak': case 'mathsf': case 'mathtt':
-          args.push(parseGroupOrAtom(stopAtRight))
+          args.push(parseTextGroup())
           break
         case 'begin':
           skipGroup()
@@ -234,6 +256,50 @@ export function parseLatex(latex: string): AstNode[] {
       return [parseAtom(stopAtRight)]
     }
 
+    /**
+     * Parse a group as raw text — used for \text, \mathrm etc.
+     * Preserves \_, \^, and nested braces as literal characters.
+     */
+    function parseTextGroup(): AstNode[] {
+      if (peek().type !== 'LBRACE') {
+        return [parseAtom(false)]
+      }
+      consume() // {
+      let text = ''
+      let depth = 1
+      while (depth > 0 && peek().type !== 'EOF') {
+        if (peek().type === 'LBRACE') {
+          depth++
+          text += '{'
+          consume()
+        } else if (peek().type === 'RBRACE') {
+          depth--
+          if (depth > 0) text += '}'
+          consume()
+        } else if (peek().type === 'CMD') {
+          const cmd = consume().value
+          if (cmd === '_') {
+            text += '_'
+          } else if (cmd === '^') {
+            text += '^'
+          } else if (cmd === '{' || cmd === '}') {
+            text += cmd
+          } else {
+            text += '\\' + cmd
+          }
+        } else if (peek().type === 'SUB') {
+          text += '_'
+          consume()
+        } else if (peek().type === 'SUPER') {
+          text += '^'
+          consume()
+        } else {
+          text += consume().value
+        }
+      }
+      return [{ type: 'text', text }]
+    }
+
     function skipGroup(): void {
       if (peek().type === 'LBRACE') {
         consume()
@@ -253,15 +319,28 @@ export function parseLatex(latex: string): AstNode[] {
 }
 
 
-// ── docx conversion ──
+// ── docx conversion (industry-standard: KaTeX → MathML → OMML) ──
+
+import { DOMImplementation } from '@xmldom/xmldom'
 
 export function convertLatexToDocxMath(latex: string, docx: any): any {
   try {
-    const { Math } = docx
-    const nodes = parseLatex(latex)
-    const children = nodes.flatMap((n) => astNodeToDocx(n, docx))
-    return new Math({ children })
+    const impl = new DOMImplementation()
+    const doc = impl.createDocument(
+      'http://schemas.openxmlformats.org/officeDocument/2006/math',
+      'm:oMath',
+      null
+    )
+    const omml = convertLatexToOmml(latex, doc as unknown as Document)
+
+    const XMLSerializer = require('@xmldom/xmldom').XMLSerializer
+    const serializer = new XMLSerializer()
+    const xmlStr = serializer.serializeToString(omml)
+
+    const imported = docx.ImportedXmlComponent.fromXmlString(xmlStr)
+    return imported.root?.[0] ?? imported
   } catch (e) {
+    console.warn('OMML conversion failed, falling back to plain text:', e)
     const { Math, MathRun } = docx
     return new Math({ children: [new MathRun(latex)] })
   }
@@ -270,8 +349,7 @@ export function convertLatexToDocxMath(latex: string, docx: any): any {
 function astNodeToDocx(node: AstNode, docx: any): any[] {
   const {
     MathRun, MathFraction, MathSuperScript, MathSubScript, MathSubSuperScript,
-    MathRadical, MathSum, MathIntegral, MathLimitLower, MathAccentCharacter,
-    MathBar, MathBracket,
+    MathRadical, MathSum, MathIntegral, MathLimitLower,
   } = docx
 
   switch (node.type) {
@@ -338,56 +416,71 @@ function astNodeToDocx(node: AstNode, docx: any): any[] {
           }
         case 'bracket': {
           const all = node.args[0] || []
-          if (all.length >= 2) {
-            const first = all[0]
-            const last = all[all.length - 1]
-            const leftDelim = first.type === 'text' ? first.text : '('
-            const rightDelim = last.type === 'text' ? last.text : ')'
-            const content = all.slice(1, -1)
-            return [new MathBracket({
-              children: content.flatMap((c) => astNodeToDocx(c, docx)),
-              beginningCharacter: mapDelimiter(leftDelim),
-              endingCharacter: mapDelimiter(rightDelim),
-            })]
-          }
-          return [new MathBracket({
-            children: all.flatMap((c) => astNodeToDocx(c, docx)),
-            beginningCharacter: '(',
-            endingCharacter: ')',
-          })]
+          const leftDelim = (node as any).left || '('
+          const rightDelim = (node as any).right || ')'
+          return [buildOmmlBracket(
+            all.flatMap((c) => astNodeToDocx(c, docx)),
+            mapDelimiter(leftDelim),
+            mapDelimiter(rightDelim),
+            docx
+          )]
         }
         case 'overline':
-          return [new MathBar({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            position: 'top',
-          })]
+          return [buildOmmlBar(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            'top', docx
+          )]
         case 'underline':
-          return [new MathBar({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            position: 'bottom',
-          })]
+          return [buildOmmlBar(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            'bot', docx
+          )]
         case 'hat': case 'widehat':
-          return [new MathAccentCharacter({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            character: '\u0302',
-          })]
+          return [buildOmmlAccent(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            '\u0302', docx
+          )]
         case 'bar':
-          return [new MathAccentCharacter({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            character: '\u0304',
-          })]
+          return [buildOmmlAccent(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            '\u0304', docx
+          )]
         case 'vec':
-          return [new MathAccentCharacter({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            character: '\u20D7',
-          })]
+          return [buildOmmlAccent(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            '\u20D7', docx
+          )]
         case 'tilde': case 'widetilde':
-          return [new MathAccentCharacter({
-            children: (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
-            character: '\u0303',
-          })]
-        case 'text': case 'mathrm':
-          return (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx))
+          return [buildOmmlAccent(
+            (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx)),
+            '\u0303', docx
+          )]
+        case 'text': case 'mathrm': case 'mathbf': case 'mathit': case 'mathcal': case 'mathbb': case 'mathfrak': case 'mathsf': case 'mathtt': {
+          const children = (node.args[0] || []).flatMap((c) => astNodeToDocx(c, docx))
+          const styleXml: Record<string, string> = {
+            mathbf: '<m:rPr><m:sty m:val="b"/></m:rPr>',
+            mathit: '<m:rPr><m:sty m:val="i"/></m:rPr>',
+            mathcal: '<m:rPr><m:scr m:val="script"/></m:rPr>',
+            mathbb: '<m:rPr><m:scr m:val="double-struck"/></m:rPr>',
+            mathfrak: '<m:rPr><m:scr m:val="fraktur"/></m:rPr>',
+          }
+          const xml = styleXml[node.name]
+          if (xml && docx.ImportedXmlComponent) {
+            for (const child of children) {
+              if ((child as any).rootKey === 'm:r' && Array.isArray((child as any).root)) {
+                const rPr = docx.ImportedXmlComponent.fromXmlString(xml)
+                ;(child as any).root.unshift(rPr)
+              }
+            }
+          }
+          return children
+        }
+        case ',': case ';': case ':':
+          return [new MathRun(' ')]
+        case '!':
+          return []
+        case '{': case '}':
+          return [new MathRun(node.name)]
         default:
           if (GREEK_MAP[node.name]) {
             return [new MathRun(GREEK_MAP[node.name])]
@@ -399,6 +492,55 @@ function astNodeToDocx(node: AstNode, docx: any): any[] {
       }
     }
   }
+}
+
+// ── OMML wrapper builders (docx 8.x compatible) ──
+// docx 8.6.0 does NOT have MathBar / MathBracket / MathAccentCharacter classes.
+// We build them via raw OMML XML + ImportedXmlComponent.fromXmlString.
+
+function buildOmmlBar(children: any[], position: 'top' | 'bot', docx: any): any {
+  const pos = position === 'top' ? 'top' : 'bot'
+  // m:pos uses m:val attribute — correct
+  const xml = `<m:bar><m:barPr><m:pos m:val="${pos}"/></m:barPr><m:e><m:r><m:t>_</m:t></m:r></m:e></m:bar>`
+  const comp = docx.ImportedXmlComponent.fromXmlString(xml).root[0]
+  const e = comp.root.find((r: any) => r.rootKey === 'm:e')
+  if (e) {
+    e.root.length = 0
+    for (const child of children) e.root.push(child)
+  }
+  return comp
+}
+
+function buildOmmlBracket(children: any[], left: string, right: string, docx: any): any {
+  // m:begChr and m:endChr MUST use m:val attribute (not text content)
+  const xml = `<m:d><m:dPr><m:begChr m:val="${escapeXml(left)}"/><m:endChr m:val="${escapeXml(right)}"/></m:dPr><m:e><m:r><m:t>_</m:t></m:r></m:e></m:d>`
+  const comp = docx.ImportedXmlComponent.fromXmlString(xml).root[0]
+  const e = comp.root.find((r: any) => r.rootKey === 'm:e')
+  if (e) {
+    e.root.length = 0
+    for (const child of children) e.root.push(child)
+  }
+  return comp
+}
+
+function buildOmmlAccent(children: any[], accent: string, docx: any): any {
+  // m:chr MUST use m:val attribute (not text content)
+  const xml = `<m:acc><m:accPr><m:chr m:val="${escapeXml(accent)}"/></m:accPr><m:e><m:r><m:t>_</m:t></m:r></m:e></m:acc>`
+  const comp = docx.ImportedXmlComponent.fromXmlString(xml).root[0]
+  const e = comp.root.find((r: any) => r.rootKey === 'm:e')
+  if (e) {
+    e.root.length = 0
+    for (const child of children) e.root.push(child)
+  }
+  return comp
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 function mapText(text: string): string {
@@ -421,31 +563,24 @@ function mapDelimiter(delim: string): string {
   const map: Record<string, string> = {
     '(': '(', ')': ')', '[': '[', ']': ']', '{': '{', '}': '}',
     '|': '|', '\\|': '‖', '.': '', '/': '/',
+    '\\lfloor': '⌊', '\\rfloor': '⌋',
+    '\\lceil': '⌈', '\\rceil': '⌉',
+    '\\langle': '⟨', '\\rangle': '⟩',
+    '\\lbrace': '{', '\\rbrace': '}',
+    '\\vert': '|', '\\Vert': '‖',
+    '\\backslash': '\\',
   }
   return map[delim] || delim
 }
 
 // ── OMML conversion ──
 
+const MATH_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+
+import { convertLatexToOmml as convertLatexToOmmlV2 } from './latex-to-math-ml'
+
 export function convertLatexToOmml(latex: string, doc: Document): Element {
-  try {
-    const oMath = doc.createElement('m:oMath')
-    const nodes = parseLatex(latex)
-    for (const node of nodes) {
-      for (const el of astNodeToOmml(node, doc)) {
-        oMath.appendChild(el)
-      }
-    }
-    return oMath
-  } catch (e) {
-    const oMath = doc.createElement('m:oMath')
-    const mR = doc.createElement('m:r')
-    const mT = doc.createElement('m:t')
-    mT.textContent = latex
-    mR.appendChild(mT)
-    oMath.appendChild(mR)
-    return oMath
-  }
+  return convertLatexToOmmlV2(latex, doc, false)
 }
 
 function astNodeToOmml(node: AstNode, doc: Document): Element[] {
@@ -469,35 +604,35 @@ function astNodeToOmml(node: AstNode, doc: Document): Element[] {
       if (node.base.type === 'cmd') {
         switch (node.base.name) {
           case 'sum': case 'prod': case 'int': case 'iint': case 'iiint': case 'oint': {
-            const nary = doc.createElement('m:nary')
-            const naryPr = doc.createElement('m:naryPr')
-            const chr = doc.createElement('m:chr')
+            const nary = doc.createElementNS(MATH_NS, 'm:nary')
+            const naryPr = doc.createElementNS(MATH_NS, 'm:naryPr')
+            const chr = doc.createElementNS(MATH_NS, 'm:chr')
             chr.setAttribute('m:val', SYMBOL_MAP[node.base.name] || '∑')
             naryPr.appendChild(chr)
-            const limLoc = doc.createElement('m:limLoc')
+            const limLoc = doc.createElementNS(MATH_NS, 'm:limLoc')
             limLoc.setAttribute('m:val', 'subSup')
             naryPr.appendChild(limLoc)
             nary.appendChild(naryPr)
             if (sub.length > 0) {
-              const subEl = doc.createElement('m:sub')
+              const subEl = doc.createElementNS(MATH_NS, 'm:sub')
               for (const el of sub) subEl.appendChild(el)
               nary.appendChild(subEl)
             }
             if (sup.length > 0) {
-              const supEl = doc.createElement('m:sup')
+              const supEl = doc.createElementNS(MATH_NS, 'm:sup')
               for (const el of sup) supEl.appendChild(el)
               nary.appendChild(supEl)
             }
-            const e = doc.createElement('m:e')
+            const e = doc.createElementNS(MATH_NS, 'm:e')
             nary.appendChild(e)
             return [nary]
           }
           case 'lim': {
-            const limLow = doc.createElement('m:limLow')
-            const e = doc.createElement('m:e')
+            const limLow = doc.createElementNS(MATH_NS, 'm:limLow')
+            const e = doc.createElementNS(MATH_NS, 'm:e')
             e.appendChild(createMathRun('lim', doc))
             limLow.appendChild(e)
-            const lim = doc.createElement('m:lim')
+            const lim = doc.createElementNS(MATH_NS, 'm:lim')
             for (const el of sub) lim.appendChild(el)
             limLow.appendChild(lim)
             return [limLow]
@@ -506,32 +641,32 @@ function astNodeToOmml(node: AstNode, doc: Document): Element[] {
       }
 
       if (sup.length > 0 && sub.length > 0) {
-        const sSubSup = doc.createElement('m:sSubSup')
-        const e = doc.createElement('m:e')
+        const sSubSup = doc.createElementNS(MATH_NS, 'm:sSubSup')
+        const e = doc.createElementNS(MATH_NS, 'm:e')
         for (const el of base) e.appendChild(el)
         sSubSup.appendChild(e)
-        const subEl = doc.createElement('m:sub')
+        const subEl = doc.createElementNS(MATH_NS, 'm:sub')
         for (const el of sub) subEl.appendChild(el)
         sSubSup.appendChild(subEl)
-        const supEl = doc.createElement('m:sup')
+        const supEl = doc.createElementNS(MATH_NS, 'm:sup')
         for (const el of sup) supEl.appendChild(el)
         sSubSup.appendChild(supEl)
         return [sSubSup]
       } else if (sup.length > 0) {
-        const sSup = doc.createElement('m:sSup')
-        const e = doc.createElement('m:e')
+        const sSup = doc.createElementNS(MATH_NS, 'm:sSup')
+        const e = doc.createElementNS(MATH_NS, 'm:e')
         for (const el of base) e.appendChild(el)
         sSup.appendChild(e)
-        const supEl = doc.createElement('m:sup')
+        const supEl = doc.createElementNS(MATH_NS, 'm:sup')
         for (const el of sup) supEl.appendChild(el)
         sSup.appendChild(supEl)
         return [sSup]
       } else if (sub.length > 0) {
-        const sSub = doc.createElement('m:sSub')
-        const e = doc.createElement('m:e')
+        const sSub = doc.createElementNS(MATH_NS, 'm:sSub')
+        const e = doc.createElementNS(MATH_NS, 'm:e')
         for (const el of base) e.appendChild(el)
         sSub.appendChild(e)
-        const subEl = doc.createElement('m:sub')
+        const subEl = doc.createElementNS(MATH_NS, 'm:sub')
         for (const el of sub) subEl.appendChild(el)
         sSub.appendChild(subEl)
         return [sSub]
@@ -541,127 +676,133 @@ function astNodeToOmml(node: AstNode, doc: Document): Element[] {
     case 'cmd': {
       switch (node.name) {
         case 'frac': {
-          const f = doc.createElement('m:f')
-          const num = doc.createElement('m:num')
+          const f = doc.createElementNS(MATH_NS, 'm:f')
+          const num = doc.createElementNS(MATH_NS, 'm:num')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) num.appendChild(n)
           f.appendChild(num)
-          const den = doc.createElement('m:den')
+          const den = doc.createElementNS(MATH_NS, 'm:den')
           for (const n of (node.args[1] || []).flatMap((c) => astNodeToOmml(c, doc))) den.appendChild(n)
           f.appendChild(den)
           return [f]
         }
         case 'sqrt': {
-          const rad = doc.createElement('m:rad')
+          const rad = doc.createElementNS(MATH_NS, 'm:rad')
           if (node.args.length === 2) {
-            const deg = doc.createElement('m:deg')
+            const deg = doc.createElementNS(MATH_NS, 'm:deg')
             for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) deg.appendChild(n)
             rad.appendChild(deg)
           }
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[node.args.length - 1] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           rad.appendChild(e)
           return [rad]
         }
         case 'bracket': {
           const all = node.args[0] || []
-          if (all.length >= 2) {
-            const first = all[0]
-            const last = all[all.length - 1]
-            const leftDelim = first.type === 'text' ? first.text : '('
-            const rightDelim = last.type === 'text' ? last.text : ')'
-            const content = all.slice(1, -1)
-            const d = doc.createElement('m:d')
-            const dPr = doc.createElement('m:dPr')
-            const begChr = doc.createElement('m:begChr')
-            begChr.setAttribute('m:val', mapDelimiter(leftDelim))
-            dPr.appendChild(begChr)
-            const endChr = doc.createElement('m:endChr')
-            endChr.setAttribute('m:val', mapDelimiter(rightDelim))
-            dPr.appendChild(endChr)
-            d.appendChild(dPr)
-            const e = doc.createElement('m:e')
-            for (const n of content.flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
-            d.appendChild(e)
-            return [d]
-          }
-          return [createMathRun('(', doc)]
+          const leftDelim = (node as any).left || '('
+          const rightDelim = (node as any).right || ')'
+          const d = doc.createElementNS(MATH_NS, 'm:d')
+          const dPr = doc.createElementNS(MATH_NS, 'm:dPr')
+          const begChr = doc.createElementNS(MATH_NS, 'm:begChr')
+          begChr.setAttribute('m:val', mapDelimiter(leftDelim))
+          dPr.appendChild(begChr)
+          const endChr = doc.createElementNS(MATH_NS, 'm:endChr')
+          endChr.setAttribute('m:val', mapDelimiter(rightDelim))
+          dPr.appendChild(endChr)
+          d.appendChild(dPr)
+          const e = doc.createElementNS(MATH_NS, 'm:e')
+          for (const n of all.flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
+          d.appendChild(e)
+          return [d]
         }
         case 'overline': {
-          const bar = doc.createElement('m:bar')
-          const barPr = doc.createElement('m:barPr')
-          const pos = doc.createElement('m:pos')
+          const bar = doc.createElementNS(MATH_NS, 'm:bar')
+          const barPr = doc.createElementNS(MATH_NS, 'm:barPr')
+          const pos = doc.createElementNS(MATH_NS, 'm:pos')
           pos.setAttribute('m:val', 'top')
           barPr.appendChild(pos)
           bar.appendChild(barPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           bar.appendChild(e)
           return [bar]
         }
         case 'underline': {
-          const bar = doc.createElement('m:bar')
-          const barPr = doc.createElement('m:barPr')
-          const pos = doc.createElement('m:pos')
+          const bar = doc.createElementNS(MATH_NS, 'm:bar')
+          const barPr = doc.createElementNS(MATH_NS, 'm:barPr')
+          const pos = doc.createElementNS(MATH_NS, 'm:pos')
           pos.setAttribute('m:val', 'bot')
           barPr.appendChild(pos)
           bar.appendChild(barPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           bar.appendChild(e)
           return [bar]
         }
         case 'hat': case 'widehat': {
-          const acc = doc.createElement('m:acc')
-          const accPr = doc.createElement('m:accPr')
-          const chr = doc.createElement('m:chr')
+          const acc = doc.createElementNS(MATH_NS, 'm:acc')
+          const accPr = doc.createElementNS(MATH_NS, 'm:accPr')
+          const chr = doc.createElementNS(MATH_NS, 'm:chr')
           chr.setAttribute('m:val', '\u0302')
           accPr.appendChild(chr)
           acc.appendChild(accPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           acc.appendChild(e)
           return [acc]
         }
         case 'bar': {
-          const acc = doc.createElement('m:acc')
-          const accPr = doc.createElement('m:accPr')
-          const chr = doc.createElement('m:chr')
+          const acc = doc.createElementNS(MATH_NS, 'm:acc')
+          const accPr = doc.createElementNS(MATH_NS, 'm:accPr')
+          const chr = doc.createElementNS(MATH_NS, 'm:chr')
           chr.setAttribute('m:val', '\u0304')
           accPr.appendChild(chr)
           acc.appendChild(accPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           acc.appendChild(e)
           return [acc]
         }
         case 'vec': {
-          const acc = doc.createElement('m:acc')
-          const accPr = doc.createElement('m:accPr')
-          const chr = doc.createElement('m:chr')
+          const acc = doc.createElementNS(MATH_NS, 'm:acc')
+          const accPr = doc.createElementNS(MATH_NS, 'm:accPr')
+          const chr = doc.createElementNS(MATH_NS, 'm:chr')
           chr.setAttribute('m:val', '\u20D7')
           accPr.appendChild(chr)
           acc.appendChild(accPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           acc.appendChild(e)
           return [acc]
         }
         case 'tilde': case 'widetilde': {
-          const acc = doc.createElement('m:acc')
-          const accPr = doc.createElement('m:accPr')
-          const chr = doc.createElement('m:chr')
+          const acc = doc.createElementNS(MATH_NS, 'm:acc')
+          const accPr = doc.createElementNS(MATH_NS, 'm:accPr')
+          const chr = doc.createElementNS(MATH_NS, 'm:chr')
           chr.setAttribute('m:val', '\u0303')
           accPr.appendChild(chr)
           acc.appendChild(accPr)
-          const e = doc.createElement('m:e')
+          const e = doc.createElementNS(MATH_NS, 'm:e')
           for (const n of (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))) e.appendChild(n)
           acc.appendChild(e)
           return [acc]
         }
-        case 'text': case 'mathrm': {
-          const texts: string[] = []
-          for (const n of (node.args[0] || [])) texts.push(getTextContent(n))
-          return [createMathRun(texts.join(''), doc)]
+        case 'text': case 'mathrm': case 'mathbf': case 'mathit': case 'mathcal': case 'mathbb': case 'mathfrak': case 'mathsf': case 'mathtt': {
+          const children = (node.args[0] || []).flatMap((c) => astNodeToOmml(c, doc))
+          const styleMap: Record<string, { sty?: string; scr?: string }> = {
+            mathbf: { sty: 'b' },
+            mathit: { sty: 'i' },
+            mathcal: { scr: 'script' },
+            mathbb: { scr: 'double-struck' },
+            mathfrak: { scr: 'fraktur' },
+          }
+          const style = styleMap[node.name]
+          if (style) {
+            for (const child of children) {
+              applyOmmlStyle(child, doc, style)
+            }
+          }
+          return children
         }
         default:
           if (GREEK_MAP[node.name]) {
@@ -679,11 +820,39 @@ function astNodeToOmml(node: AstNode, doc: Document): Element[] {
 // ── Helpers ──
 
 function createMathRun(text: string, doc: Document): Element {
-  const mR = doc.createElement('m:r')
-  const mT = doc.createElement('m:t')
+  const mR = doc.createElementNS(MATH_NS, 'm:r')
+  const mT = doc.createElementNS(MATH_NS, 'm:t')
   mT.textContent = text
   mR.appendChild(mT)
   return mR
+}
+
+/**
+ * Recursively apply OMML math style (bold/italic/script/etc.) to all <m:r> elements.
+ */
+function applyOmmlStyle(el: Element, doc: Document, style: { sty?: string; scr?: string }): void {
+  if (el.tagName === 'm:r') {
+    let rPr = el.getElementsByTagName('m:rPr')[0] as Element | undefined
+    if (!rPr) {
+      rPr = doc.createElementNS(MATH_NS, 'm:rPr')
+      el.insertBefore(rPr, el.firstChild)
+    }
+    if (style.sty) {
+      const styEl = doc.createElementNS(MATH_NS, 'm:sty')
+      styEl.setAttribute('m:val', style.sty)
+      rPr.appendChild(styEl)
+    }
+    if (style.scr) {
+      const scrEl = doc.createElementNS(MATH_NS, 'm:scr')
+      scrEl.setAttribute('m:val', style.scr)
+      rPr.appendChild(scrEl)
+    }
+  }
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === 1) {
+      applyOmmlStyle(child as Element, doc, style)
+    }
+  }
 }
 
 function getTextContent(node: AstNode): string {

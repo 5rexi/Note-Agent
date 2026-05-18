@@ -15,6 +15,7 @@ import {
   unpackDocx,
   packDocx,
 } from './word-paragraph'
+import { safePath } from '../utils/fs-guard'
 
 // ── Types ──
 
@@ -129,6 +130,14 @@ export async function openDocx(
   filePath: string,
   tempBaseDir?: string,
 ): Promise<{ doc: DocxDocument; error?: DocxNavError }> {
+  if (tempBaseDir) {
+    try {
+      filePath = safePath(filePath, tempBaseDir)
+    } catch {
+      // safePath failed — filePath may already be absolute outside workspace
+      // (e.g. system templates). Continue with original path.
+    }
+  }
   if (!existsSync(filePath)) {
     return {
       doc: null as any,
@@ -606,8 +615,19 @@ export function getDocumentOutline(body: Element): Array<{ level: number; text: 
   return outline
 }
 
-export function getDocumentText(body: Element): Array<{ index: number; path: string; text: string; style?: string }> {
-  const result: Array<{ index: number; path: string; text: string; style?: string }> = []
+export interface DocumentRun {
+  path: string
+  text: string
+  bold?: boolean
+  italic?: boolean
+  superscript?: boolean
+  subscript?: boolean
+  fontSize?: number
+  color?: string
+}
+
+export function getDocumentText(body: Element): Array<{ index: number; path: string; text: string; style?: string; runs?: DocumentRun[] }> {
+  const result: Array<{ index: number; path: string; text: string; style?: string; runs?: DocumentRun[] }> = []
   const paragraphs = body.getElementsByTagName('w:p')
 
   for (let i = 0; i < paragraphs.length; i++) {
@@ -622,11 +642,45 @@ export function getDocumentText(body: Element): Array<{ index: number; path: str
       if (pStyle) style = pStyle.getAttribute('w:val') || undefined
     }
 
+    const runs: DocumentRun[] = []
+    const runElements = p.getElementsByTagName('w:r')
+    for (let r = 0; r < runElements.length; r++) {
+      const runEl = runElements[r]
+      const runText = extractElementText(runEl)
+      if (!runText) continue
+      const rPr = runEl.getElementsByTagName('w:rPr')[0]
+      const runInfo: DocumentRun = {
+        path: `/body/p[${i + 1}]/r[${r + 1}]`,
+        text: runText.slice(0, 200),
+      }
+      if (rPr) {
+        runInfo.bold = !!rPr.getElementsByTagName('w:b')[0]
+        runInfo.italic = !!rPr.getElementsByTagName('w:i')[0]
+        const va = rPr.getElementsByTagName('w:vertAlign')[0]
+        if (va) {
+          const v = va.getAttribute('w:val') || ''
+          if (v === 'superscript') runInfo.superscript = true
+          if (v === 'subscript') runInfo.subscript = true
+        }
+        const sz = rPr.getElementsByTagName('w:sz')[0]
+        if (sz) {
+          const szVal = sz.getAttribute('w:val')
+          if (szVal) runInfo.fontSize = parseInt(szVal, 10)
+        }
+        const color = rPr.getElementsByTagName('w:color')[0]
+        if (color) {
+          runInfo.color = color.getAttribute('w:val') || undefined
+        }
+      }
+      runs.push(runInfo)
+    }
+
     result.push({
       index: i + 1,
       path: `/body/p[${i + 1}]`,
       text: text.slice(0, 500),
       style,
+      runs: runs.length > 0 ? runs : undefined,
     })
   }
 

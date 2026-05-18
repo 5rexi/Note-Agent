@@ -10,8 +10,10 @@ import type { ToolResult } from '../../types'
 import { openDocx, saveDocx, closeDocx, resolvePath } from '../../document'
 import { convertLatexToOmml } from './latex-to-math'
 
+const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
 const inputSchema = z.object({
-  filePath: z.string().describe('Absolute path to the .docx template file'),
+  filePath: z.string().describe('Path to the .docx template file (relative to workspace or absolute)'),
   content: z.string().describe('Markdown content to fill into the document'),
   anchorPath: z.string().describe('Path to the element after which content will be inserted, e.g. /body/p[131]'),
   mode: z.enum(['append', 'replace']).optional().describe('append: insert after anchor. replace: delete content between anchor and endAnchor, then insert. Default: append'),
@@ -47,7 +49,9 @@ export const WordFillTemplateTool: Tool<Input, { filePath: string; paragraphsIns
   description:
     'Fill a Word document template with Markdown content in one shot. ' +
     'Much more efficient than calling wordAdd for each paragraph individually. ' +
-    'Supports: plain paragraphs, **bold**, <sup>superscript</sup>, tables (| col1 | col2 |), and formulas ($E=mc^2$ or $$...$$ blocks). ' +
+    'Formula syntax: use $E=mc^2$ for inline formulas and $$...$$ for block formulas. ' +
+    'Formulas are automatically converted to Word OMML math — no extra tool calls needed. ' +
+    'Supports: plain paragraphs, **bold**, <sup>superscript</sup>, tables (| col1 | col2 |), and formulas. ' +
     'The anchorPath determines where the new content is inserted.',
   inputSchema,
 
@@ -246,7 +250,7 @@ function parseTable(lines: string[], start: number): { rows: MdTableRow[]; next:
 function parseInlineRuns(text: string): MdRun[] {
   const runs: MdRun[] = []
   // Pattern: **bold**, <sup>text</sup>, <sub>text</sub>
-  const regex = /(\*\*([^*]+)\*\*|<sup>([^<]+)<\/sup>|<sub>([^<]+)<\/sub>|([^*<]+))/g
+  const regex = /(\*\*([^*]+)\*\*|<sup\b[^>]*>(.*?)<\/sup>|<sub\b[^>]*>(.*?)<\/sub>|([^*<]+))/gi
   let m
   while ((m = regex.exec(text)) !== null) {
     if (m[2]) {
@@ -285,26 +289,26 @@ function parseInlineWithFormulas(text: string): MdRun[] {
 function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
   switch (block.type) {
     case 'paragraph': {
-      const p = doc.createElement('w:p')
-      const pPr = doc.createElement('w:pPr')
-      const sp = doc.createElement('w:spacing')
+      const p = doc.createElementNS(WORD_NS, 'w:p')
+      const pPr = doc.createElementNS(WORD_NS, 'w:pPr')
+      const sp = doc.createElementNS(WORD_NS, 'w:spacing')
       sp.setAttribute('w:before', '50')
       sp.setAttribute('w:line', '360')
       sp.setAttribute('w:lineRule', 'exact')
       pPr.appendChild(sp)
-      const ind = doc.createElement('w:ind')
+      const ind = doc.createElementNS(WORD_NS, 'w:ind')
       ind.setAttribute('w:firstLine', '480')
       pPr.appendChild(ind)
-      const rPr = doc.createElement('w:rPr')
-      const fonts = doc.createElement('w:rFonts')
+      const rPr = doc.createElementNS(WORD_NS, 'w:rPr')
+      const fonts = doc.createElementNS(WORD_NS, 'w:rFonts')
       fonts.setAttribute('w:ascii', '仿宋')
       fonts.setAttribute('w:eastAsia', '仿宋')
       fonts.setAttribute('w:hAnsi', '仿宋')
       rPr.appendChild(fonts)
-      const sz = doc.createElement('w:sz')
+      const sz = doc.createElementNS(WORD_NS, 'w:sz')
       sz.setAttribute('w:val', '24')
       rPr.appendChild(sz)
-      const szCs = doc.createElement('w:szCs')
+      const szCs = doc.createElementNS(WORD_NS, 'w:szCs')
       szCs.setAttribute('w:val', '24')
       rPr.appendChild(szCs)
       pPr.appendChild(rPr)
@@ -314,43 +318,43 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
         if (run.text.trim() === '') continue
 
         if (run.isFormula) {
-          const r = doc.createElement('w:r')
+          const r = doc.createElementNS(WORD_NS, 'w:r')
           const omml = convertLatexToOmml(run.text, doc)
           r.appendChild(omml)
           p.appendChild(r)
           continue
         }
 
-        const r = doc.createElement('w:r')
-        const rrPr = doc.createElement('w:rPr')
-        const fonts2 = doc.createElement('w:rFonts')
+        const r = doc.createElementNS(WORD_NS, 'w:r')
+        const rrPr = doc.createElementNS(WORD_NS, 'w:rPr')
+        const fonts2 = doc.createElementNS(WORD_NS, 'w:rFonts')
         fonts2.setAttribute('w:ascii', '仿宋')
         fonts2.setAttribute('w:eastAsia', '仿宋')
         fonts2.setAttribute('w:hAnsi', '仿宋')
         rrPr.appendChild(fonts2)
-        const sz2 = doc.createElement('w:sz')
+        const sz2 = doc.createElementNS(WORD_NS, 'w:sz')
         sz2.setAttribute('w:val', '24')
         rrPr.appendChild(sz2)
-        const szCs2 = doc.createElement('w:szCs')
+        const szCs2 = doc.createElementNS(WORD_NS, 'w:szCs')
         szCs2.setAttribute('w:val', '24')
         rrPr.appendChild(szCs2)
         if (run.bold) {
-          const b = doc.createElement('w:b')
+          const b = doc.createElementNS(WORD_NS, 'w:b')
           b.setAttribute('w:val', '1')
           rrPr.appendChild(b)
         }
         if (run.superscript) {
-          const va = doc.createElement('w:vertAlign')
+          const va = doc.createElementNS(WORD_NS, 'w:vertAlign')
           va.setAttribute('w:val', 'superscript')
           rrPr.appendChild(va)
         }
         if (run.subscript) {
-          const va = doc.createElement('w:vertAlign')
+          const va = doc.createElementNS(WORD_NS, 'w:vertAlign')
           va.setAttribute('w:val', 'subscript')
           rrPr.appendChild(va)
         }
         r.appendChild(rrPr)
-        const t = doc.createElement('w:t')
+        const t = doc.createElementNS(WORD_NS, 'w:t')
         t.textContent = run.text
         if (/^\s+|\s+$/.test(run.text)) {
           t.setAttribute('xml:space', 'preserve')
@@ -362,17 +366,17 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
     }
 
     case 'table': {
-      const tbl = doc.createElement('w:tbl')
-      const tblPr = doc.createElement('w:tblPr')
-      const tblW = doc.createElement('w:tblW')
+      const tbl = doc.createElementNS(WORD_NS, 'w:tbl')
+      const tblPr = doc.createElementNS(WORD_NS, 'w:tblPr')
+      const tblW = doc.createElementNS(WORD_NS, 'w:tblW')
       tblW.setAttribute('w:w', '5000')
       tblW.setAttribute('w:type', 'pct')
       tblPr.appendChild(tblW)
 
       // Default borders
-      const tblBorders = doc.createElement('w:tblBorders')
+      const tblBorders = doc.createElementNS(WORD_NS, 'w:tblBorders')
       for (const side of ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']) {
-        const b = doc.createElement(`w:${side}`)
+        const b = doc.createElementNS(WORD_NS, `w:${side}`)
         b.setAttribute('w:val', 'single')
         b.setAttribute('w:sz', '4')
         b.setAttribute('w:color', '000000')
@@ -384,10 +388,10 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
       const rows = block.rows || []
       if (rows.length > 0) {
         const colCount = rows[0].cells.length
-        const tblGrid = doc.createElement('w:tblGrid')
+        const tblGrid = doc.createElementNS(WORD_NS, 'w:tblGrid')
         const colW = Math.floor(9000 / colCount)
         for (let c = 0; c < colCount; c++) {
-          const gridCol = doc.createElement('w:gridCol')
+          const gridCol = doc.createElementNS(WORD_NS, 'w:gridCol')
           gridCol.setAttribute('w:w', String(colW))
           tblGrid.appendChild(gridCol)
         }
@@ -395,12 +399,12 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
       }
 
       for (const row of rows) {
-        const tr = doc.createElement('w:tr')
+        const tr = doc.createElementNS(WORD_NS, 'w:tr')
         for (const cellText of row.cells) {
-          const tc = doc.createElement('w:tc')
-          const tcPr = doc.createElement('w:tcPr')
+          const tc = doc.createElementNS(WORD_NS, 'w:tc')
+          const tcPr = doc.createElementNS(WORD_NS, 'w:tcPr')
           if (row.isHeader) {
-            const shd = doc.createElement('w:shd')
+            const shd = doc.createElementNS(WORD_NS, 'w:shd')
             shd.setAttribute('w:val', 'clear')
             shd.setAttribute('w:color', 'auto')
             shd.setAttribute('w:fill', 'D5E8F0')
@@ -408,15 +412,15 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
           }
           tc.appendChild(tcPr)
 
-          const p = doc.createElement('w:p')
-          const pPr = doc.createElement('w:pPr')
-          const jc = doc.createElement('w:jc')
+          const p = doc.createElementNS(WORD_NS, 'w:p')
+          const pPr = doc.createElementNS(WORD_NS, 'w:pPr')
+          const jc = doc.createElementNS(WORD_NS, 'w:jc')
           jc.setAttribute('w:val', 'center')
           pPr.appendChild(jc)
           p.appendChild(pPr)
 
-          const r = doc.createElement('w:r')
-          const t = doc.createElement('w:t')
+          const r = doc.createElementNS(WORD_NS, 'w:r')
+          const t = doc.createElementNS(WORD_NS, 'w:t')
           t.textContent = cellText
           r.appendChild(t)
           p.appendChild(r)
@@ -429,14 +433,14 @@ function blockToOoXml(block: MdParagraph, doc: Document): Element[] {
     }
 
     case 'formula': {
-      const p = doc.createElement('w:p')
-      const pPr = doc.createElement('w:pPr')
-      const jc = doc.createElement('w:jc')
+      const p = doc.createElementNS(WORD_NS, 'w:p')
+      const pPr = doc.createElementNS(WORD_NS, 'w:pPr')
+      const jc = doc.createElementNS(WORD_NS, 'w:jc')
       jc.setAttribute('w:val', 'center')
       pPr.appendChild(jc)
       p.appendChild(pPr)
 
-      const r = doc.createElement('w:r')
+      const r = doc.createElementNS(WORD_NS, 'w:r')
       const omml = convertLatexToOmml(block.latex || '', doc)
       r.appendChild(omml)
       p.appendChild(r)

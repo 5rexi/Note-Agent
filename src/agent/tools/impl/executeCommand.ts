@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { spawn } from 'child_process'
 import { z } from 'zod'
 import { join, delimiter } from 'path'
 import { homedir } from 'os'
@@ -46,7 +46,7 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
 
   isReadOnly() { return false },
   isConcurrencySafe() { return false },
-  isDestructive() { return false },
+  isDestructive() { return true },
 
   checkPermissions(input, ctx) {
     if (isDangerousCommand(input.command)) {
@@ -66,13 +66,15 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
   },
 
   async call(input, ctx: ToolContext): Promise<ToolResult<{ stdout: string; stderr: string; exitCode: number }>> {
-    try {
+    const MAX_OUTPUT_SIZE = 10 * 1024 * 1024 // 10 MB
+    const MAX_TIMEOUT_SECONDS = 300 // 5 minutes hard cap
+
+    const timeoutSec = Math.min(input.timeout || 30, MAX_TIMEOUT_SECONDS)
+
+    return new Promise((resolve) => {
       let execCommand = input.command
-      let execOptions: any = {
+      const execOptions: any = {
         cwd: ctx.workspacePath,
-        timeout: (input.timeout || 30) * 1000,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
         env: {
           ...process.env,
           HOME: process.env.HOME || process.env.USERPROFILE || homedir(),
@@ -81,23 +83,19 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
       }
 
       // Prevent polluting the workspace root with node_modules.
-      // Route npm/bun/yarn/pnpm install commands into .note_agent/ instead.
       const installPattern = /^\s*(npm\s+(install|i)\b|bun\s+install\b|yarn\s+(add|install)\b|pnpm\s+(add|install)\b)/
       if (installPattern.test(input.command)) {
         execOptions.cwd = join(ctx.workspacePath, '.note_agent')
       }
 
-      // On Windows, route through user-selected shell env (Git Bash / WSL / native)
+      // On Windows, route through user-selected shell env
       if (process.platform === 'win32') {
         const shellEnv = getShellEnvFromDb()
         if (shellEnv) {
           const built = buildWindowsShellCommand(input.command, ctx.workspacePath, shellEnv)
           execCommand = built.command
-          execOptions = {
-            ...execOptions,
-            cwd: built.options.cwd,
-            shell: built.options.shell,
-          }
+          execOptions.cwd = built.options.cwd
+          execOptions.shell = built.options.shell
         } else {
           execOptions.shell = true
         }
@@ -106,30 +104,82 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
       // Route python commands to workspace venv if available
       execCommand = rewritePythonCommand(execCommand, ctx.workspacePath)
 
-      // Replace Windows-style `> nul` / `2> nul` redirects with Linux equivalents
-      // to avoid creating a literal `nul` file on Linux/WSL
+      // Replace Windows-style redirects
       execCommand = execCommand.replace(/>\s*nul\b/g, '> /dev/null').replace(/2>\s*nul\b/g, '2> /dev/null')
 
-      const stdout = execSync(execCommand, execOptions)
-      return { data: { stdout, stderr: '', exitCode: 0 } }
-    } catch (err: any) {
-      const stderr = err.stderr || ''
-      const stdout = err.stdout || ''
-      const exitCode = err.status || 1
-      // Build a concise error message — avoid leaking raw shell stderr to the model
-      let errorMsg = `Command failed with exit code ${exitCode}`
-      if (stderr.includes('not found') || stderr.includes('No such file')) {
-        errorMsg = `Command not found or not installed: "${input.command.split(' ')[0]}"`
-      } else if (stderr) {
-        errorMsg += `: ${stderr.slice(0, 200)}`
-      } else if (err.message) {
-        errorMsg += `: ${err.message.slice(0, 200)}`
-      }
-      return {
-        data: { stdout, stderr: stderr.slice(0, 500), exitCode },
-        error: errorMsg,
-      }
-    }
+      let stdout = ''
+      let stderr = ''
+      let killed = false
+
+      const child = spawn(execCommand, [], {
+        ...execOptions,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+
+      const timeoutId = setTimeout(() => {
+        killed = true
+        child.kill('SIGTERM')
+        // Force kill after 5s if still running
+        setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 5000)
+      }, timeoutSec * 1000)
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        if (stdout.length + chunk.length > MAX_OUTPUT_SIZE) {
+          stdout += chunk.slice(0, MAX_OUTPUT_SIZE - stdout.length).toString('utf-8')
+          if (!killed) {
+            killed = true
+            child.kill('SIGTERM')
+          }
+        } else {
+          stdout += chunk.toString('utf-8')
+        }
+      })
+
+      child.stderr?.on('data', (chunk: Buffer) => {
+        if (stderr.length + chunk.length > MAX_OUTPUT_SIZE) {
+          stderr += chunk.slice(0, MAX_OUTPUT_SIZE - stderr.length).toString('utf-8')
+        } else {
+          stderr += chunk.toString('utf-8')
+        }
+      })
+
+      child.on('error', (err: any) => {
+        clearTimeout(timeoutId)
+        let errorMsg = `Command failed: ${err.message || 'Unknown error'}`
+        if (err.code === 'ENOENT') {
+          errorMsg = `Command not found or not installed: "${input.command.split(' ')[0]}"`
+        }
+        resolve({
+          data: { stdout, stderr: stderr.slice(0, 500), exitCode: 1 },
+          error: errorMsg,
+        })
+      })
+
+      child.on('close', (code: number | null) => {
+        clearTimeout(timeoutId)
+        const exitCode = code ?? (killed ? 124 : 1)
+
+        if (exitCode === 0 && !killed) {
+          resolve({ data: { stdout, stderr: stderr.slice(0, 500), exitCode: 0 } })
+          return
+        }
+
+        let errorMsg = `Command failed with exit code ${exitCode}`
+        if (killed && code === null) {
+          errorMsg = timeoutSec >= MAX_TIMEOUT_SECONDS
+            ? `Command timed out after ${timeoutSec}s (hard limit reached)`
+            : `Command timed out after ${timeoutSec}s`
+        } else if (stderr.includes('not found') || stderr.includes('No such file') || stderr.includes('is not recognized')) {
+          errorMsg = `Command not found or not installed: "${input.command.split(' ')[0]}"`
+        } else if (stderr) {
+          errorMsg += `: ${stderr.slice(0, 200)}`
+        }
+        resolve({
+          data: { stdout, stderr: stderr.slice(0, 500), exitCode },
+          error: errorMsg,
+        })
+      })
+    })
   },
 
   renderToolUse(input) {

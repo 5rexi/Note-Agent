@@ -45,4 +45,5 @@ export {
   type DocxElement,
   type DocxNavError,
   type QuerySelector,
+  type DocumentRun,
 } from './docx-navigator'

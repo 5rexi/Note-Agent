@@ -110,8 +110,13 @@ export const SubagentTool: Tool<Input, string> = {
   },
 
   async call(input, ctx): Promise<ToolResult<string>> {
-    // Inherit parent mode by default so subagent permissions match the parent session
-    const mode = (input.mode ?? ctx.mode ?? 'explore') as PermissionMode
+    // Inherit parent mode by default so subagent permissions match the parent session.
+    // Clamp subagent mode to be no more permissive than the parent session.
+    const requestedMode = (input.mode ?? ctx.mode ?? 'explore') as PermissionMode
+    const parentMode = ctx.mode ?? 'explore'
+    const modeHierarchy: Record<PermissionMode, number> = { explore: 0, ask: 1, execute: 2, research: 2 }
+    const mode: PermissionMode =
+      modeHierarchy[requestedMode] > modeHierarchy[parentMode] ? parentMode : requestedMode
     const maxRounds = input.maxRounds ?? 5
 
     // Enforce task length limit at runtime (safety net when model ignores prompt rules)

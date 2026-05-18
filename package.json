@@ -44,7 +44,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -53,11 +55,15 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Development"
@@ -83,6 +89,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "docx": "8.6.0",
     "docx-preview": "^0.3.7",
     "glob": "^13.0.6",
     "jotai": "^2.16.0",
@@ -90,6 +97,7 @@
     "katex": "^0.16.46",
     "lucide-react": "^0.561.0",
     "mammoth": "^1.12.0",
+    "mathml2omml": "^0.5.0",
     "minimatch": "^10.2.5",
     "monaco-editor": "^0.55.1",
     "next-themes": "^0.4.6",

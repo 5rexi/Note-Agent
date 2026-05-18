@@ -531,7 +531,7 @@ class BrowserHostImpl implements BrowserHost {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         offscreen: false,
       },
     })

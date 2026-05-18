@@ -49,6 +49,7 @@ export class AgentEngine {
   private messages: Message[] = []
   private opts: AgentEngineOptions
   private running = false
+  private submitLock = false
   private sessionId: string | null = null
   private provider: string
   private model: string
@@ -115,112 +116,114 @@ export class AgentEngine {
    * 如果拒绝，工具不会执行，但对话会继续（模型会看到拒绝结果）。
    */
   async *submit(userInput: string | { text: string; imageParts?: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> }): AsyncGenerator<AgentEvent, void, unknown> {
-    if (this.running) {
+    // Atomic check-and-set to prevent concurrent submit() calls
+    if (this.submitLock || this.running) {
       yield { type: 'error', message: 'Agent is already running' }
       return
     }
-
+    this.submitLock = true
     this.running = true
 
-    // Parse input
-    let text = typeof userInput === 'string' ? userInput : userInput.text
-    const imageParts = typeof userInput === 'string' ? undefined : userInput.imageParts
-
-    // ── /skill command interception ──
-    let slashSkillPrompt: string | undefined
     try {
-      const skillMatch = text.match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
-      if (skillMatch) {
-        const skillId = skillMatch[1]
-        const remainingText = skillMatch[2] || ''
-        logger.info('[AgentEngine] /skill command detected:', { skillId, remainingText })
-        const skills = loadSkills(this.opts.workspacePath)
-        logger.info('[AgentEngine] Loaded skills count:', skills.length)
-        const skill = skills.find((s) => s.id === skillId)
-        if (skill) {
-          slashSkillPrompt = getSkillPrompt(skill)
-          text = remainingText.trim() || `[使用 ${skill.name} 技能]`
-          logger.info('[AgentEngine] Skill activated:', skill.name, 'prompt length:', slashSkillPrompt.length)
-        } else {
-          logger.warn('[AgentEngine] Skill not found:', skillId)
+      // Parse input
+      let text = typeof userInput === 'string' ? userInput : userInput.text
+      const imageParts = typeof userInput === 'string' ? undefined : userInput.imageParts
+
+      // ── /skill command interception ──
+      let slashSkillPrompt: string | undefined
+      try {
+        const skillMatch = text.match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
+        if (skillMatch) {
+          const skillId = skillMatch[1]
+          const remainingText = skillMatch[2] || ''
+          logger.info('[AgentEngine] /skill command detected:', { skillId, remainingText })
+          const skills = loadSkills(this.opts.workspacePath)
+          logger.info('[AgentEngine] Loaded skills count:', skills.length)
+          const skill = skills.find((s) => s.id === skillId)
+          if (skill) {
+            slashSkillPrompt = getSkillPrompt(skill)
+            text = remainingText.trim() || `[使用 ${skill.name} 技能]`
+            logger.info('[AgentEngine] Skill activated:', skill.name, 'prompt length:', slashSkillPrompt.length)
+          } else {
+            logger.warn('[AgentEngine] Skill not found:', skillId)
+          }
         }
+      } catch (skillErr: any) {
+        logger.error('[AgentEngine] /skill command processing error:', skillErr?.message, skillErr?.stack)
+        // Continue without skill — don't let skill loading crash the session
       }
-    } catch (skillErr: any) {
-      logger.error('[AgentEngine] /skill command processing error:', skillErr?.message, skillErr?.stack)
-      // Continue without skill — don't let skill loading crash the session
-    }
 
-    // Add user message
-    let userMsg: Message
-    try {
-      if (imageParts && Array.isArray(imageParts) && imageParts.length > 0) {
-        const parts: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [...imageParts]
-        if (text && typeof text === 'string' && text.trim()) parts.push({ type: 'text', text })
-        userMsg = { role: 'user', content: parts }
-      } else {
-        userMsg = { role: 'user', content: text || '' }
+      // Add user message
+      let userMsg: Message
+      try {
+        if (imageParts && Array.isArray(imageParts) && imageParts.length > 0) {
+          const parts: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [...imageParts]
+          if (text && typeof text === 'string' && text.trim()) parts.push({ type: 'text', text })
+          userMsg = { role: 'user', content: parts }
+        } else {
+          userMsg = { role: 'user', content: text || '' }
+        }
+        this.messages.push(userMsg)
+      } catch (msgErr: any) {
+        logger.error('[AgentEngine] Failed to construct user message:', msgErr?.message, msgErr?.stack)
+        throw msgErr
       }
-      this.messages.push(userMsg)
-    } catch (msgErr: any) {
-      logger.error('[AgentEngine] Failed to construct user message:', msgErr?.message, msgErr?.stack)
-      throw msgErr
-    }
 
-    const toolContext = {
-      workspacePath: this.opts.workspacePath,
-      mode: this.opts.mode,
-      openFiles: this.opts.openFiles,
-      sessionId: this.sessionId ?? undefined,
-      dataSources: this.opts.dataSources,
-    }
-
-    const rules = loadPermissionRules()
-    const permissionContext: PermissionContext = {
-      mode: this.opts.mode,
-      alwaysAllowRules: rules.allow,
-      alwaysDenyRules: rules.deny,
-      alwaysAskRules: rules.ask,
-      approvedToolCallIds: new Set(),
-      rejectedToolCallIds: new Set(),
-    }
-
-    let baseSystemPrompt = ''
-    let taskPlan: any = null
-    let persistedPlan: any = null
-    let minimalPromptCtx: any = null
-    try {
-      const fileTreeSummary = summarizeFileTree(this.opts.workspacePath, 30)
-      const prepared = await prepareSession({
-        text,
-        llmConfig: this.opts.llmConfig,
-        sessionId: this.sessionId,
+      const toolContext = {
         workspacePath: this.opts.workspacePath,
-        openFiles: this.opts.openFiles,
         mode: this.opts.mode,
-        toolContext,
-        fileTreeSummary,
-      })
-      taskPlan = prepared.taskPlan
-      persistedPlan = prepared.persistedPlan
-      minimalPromptCtx = prepared.minimalPromptCtx
-      baseSystemPrompt = buildMinimalPrompt(minimalPromptCtx)
-      if (slashSkillPrompt) {
-        baseSystemPrompt += `\n\n## Active Skill\n${slashSkillPrompt}`
+        openFiles: this.opts.openFiles,
+        sessionId: this.sessionId ?? undefined,
+        dataSources: this.opts.dataSources,
       }
-      logger.info('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
-    } catch (setupErr: any) {
-      logger.error('[AgentEngine] Session setup error:', setupErr?.message, setupErr?.stack)
-      throw setupErr
-    }
 
-    // Boost maxRounds for research-phase tasks (capped to prevent runaway loops)
-    let effectiveMaxRounds = this.opts.maxRounds ?? 20
-    if (taskPlan?.phases?.some((p: any) => p.mode === 'research')) {
-      effectiveMaxRounds = Math.max(effectiveMaxRounds, 30)
-      logger.info('[AgentEngine] Research phase detected — boosting maxRounds to', effectiveMaxRounds)
-    }
+      const rules = loadPermissionRules()
+      const permissionContext: PermissionContext = {
+        mode: this.opts.mode,
+        alwaysAllowRules: rules.allow,
+        alwaysDenyRules: rules.deny,
+        alwaysAskRules: rules.ask,
+        approvedToolCallIds: new Set(),
+        rejectedToolCallIds: new Set(),
+      }
 
-    try {
+      let baseSystemPrompt = ''
+      let taskPlan: any = null
+      let persistedPlan: any = null
+      let minimalPromptCtx: any = null
+      try {
+        const fileTreeSummary = summarizeFileTree(this.opts.workspacePath, 30)
+        const prepared = await prepareSession({
+          text,
+          llmConfig: this.opts.llmConfig,
+          sessionId: this.sessionId,
+          workspacePath: this.opts.workspacePath,
+          openFiles: this.opts.openFiles,
+          mode: this.opts.mode,
+          toolContext,
+          fileTreeSummary,
+        })
+        taskPlan = prepared.taskPlan
+        persistedPlan = prepared.persistedPlan
+        minimalPromptCtx = prepared.minimalPromptCtx
+        baseSystemPrompt = buildMinimalPrompt(minimalPromptCtx)
+        if (slashSkillPrompt) {
+          baseSystemPrompt += `\n\n## Active Skill\n${slashSkillPrompt}`
+        }
+        logger.info('[AgentEngine] System prompt length:', baseSystemPrompt.length, 'chars')
+      } catch (setupErr: any) {
+        logger.error('[AgentEngine] Session setup error:', setupErr?.message, setupErr?.stack)
+        throw setupErr
+      }
+
+      // Boost maxRounds for research-phase tasks (capped to prevent runaway loops)
+      let effectiveMaxRounds = this.opts.maxRounds ?? 20
+      if (taskPlan?.phases?.some((p: any) => p.mode === 'research')) {
+        effectiveMaxRounds = Math.max(effectiveMaxRounds, 30)
+        logger.info('[AgentEngine] Research phase detected — boosting maxRounds to', effectiveMaxRounds)
+      }
+
+      try {
       // Build llmConfig resolver: fixed or dynamic via router
       let lastRoutingResult: RoutingResult | undefined
       const llmConfigResolver = this.opts.modelRouter
@@ -401,14 +404,16 @@ export class AgentEngine {
       }
 
       yield { type: 'done' }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        yield { type: 'done' }
-      } else {
-        yield { type: 'error', message: err.message || 'Unknown error' }
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          yield { type: 'done' }
+        } else {
+          yield { type: 'error', message: err.message || 'Unknown error' }
+        }
       }
     } finally {
       this.running = false
+      this.submitLock = false
       this.abortController = null
     }
   }

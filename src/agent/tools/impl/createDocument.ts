@@ -58,6 +58,8 @@ export const CreateDocumentTool: Tool<Input, { path: string; paragraphs: number;
     'For SHORT content (< 2KB), pass it directly in the "content" parameter. ' +
     'For LONG documents, FIRST write the Markdown to a file with writeFile, THEN call createDocument with "sourcePath". ' +
     'Do NOT use executeCommand + npm scripts for this — use createDocument directly. ' +
+    'Formula syntax: use $E=mc^2$ for inline formulas and $$...$$ for block formulas. ' +
+    'Formulas are automatically converted to Word OMML math — no extra tool calls needed. ' +
     'Supports headings, bold, superscript/subscript, tables, and formulas.',
   inputSchema,
 
@@ -188,7 +190,7 @@ export const CreateDocumentTool: Tool<Input, { path: string; paragraphs: number;
       writeFileSync(filePath, buffer)
 
       return {
-        data: { path: input.path, paragraphs: paragraphCount, tables: tableCount },
+        data: { path: safePath(input.path, ctx.workspacePath), paragraphs: paragraphCount, tables: tableCount },
         preview: `Created ${input.path} (${paragraphCount} paragraphs, ${tableCount} tables)`,
       }
     } catch (err: any) {
@@ -295,7 +297,7 @@ function parseTable(lines: string[], start: number): { rows: MdTableRow[]; next:
 
 function parseInlineRuns(text: string): MdRun[] {
   const runs: MdRun[] = []
-  const regex = /(\*\*([^*]+)\*\*|<sup>([^<]+)<\/sup>|<sub>([^<]+)<\/sub>|([^*<]+))/g
+  const regex = /(\*\*([^*]+)\*\*|<sup\b[^>]*>(.*?)<\/sup>|<sub\b[^>]*>(.*?)<\/sub>|([^*<]+))/gi
   let m
   while ((m = regex.exec(text)) !== null) {
     if (m[2]) {

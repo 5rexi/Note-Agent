@@ -61,7 +61,10 @@ export const EditFileRangeTool: Tool<Input, { path: string; replaced: boolean }>
     }
 
     const content = readFileSync(filePath, 'utf-8')
-    const lines = content.split('\n')
+    // Normalize CRLF to LF for editing, preserve original EOL style for output
+    const originalHasCRLF = content.includes('\r\n')
+    const normalizedContent = originalHasCRLF ? content.replace(/\r\n/g, '\n') : content
+    const lines = normalizedContent.split('\n')
 
     const { startLine, startColumn, endLine, endColumn, replacement } = input
 
@@ -112,7 +115,9 @@ export const EditFileRangeTool: Tool<Input, { path: string; replaced: boolean }>
       newContent = lines.join('\n')
     }
 
-    writeFileSync(filePath, newContent, 'utf-8')
+    // Restore original line endings if file used CRLF
+    const finalContent = originalHasCRLF ? newContent.replace(/\n/g, '\r\n') : newContent
+    writeFileSync(filePath, finalContent, 'utf-8')
 
     // Notify renderer that file changed (so editor refreshes)
     try {

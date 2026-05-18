@@ -164,25 +164,12 @@ function openWithLibreOffice(filePath: string): { success: boolean; error?: stri
 
 function openWithSystemDefault(filePath: string): { success: boolean; error?: string } {
   try {
-    const platform = process.platform
-    let command: string
-    let args: string[]
-    if (platform === 'darwin') {
-      command = 'open'
-      args = [filePath]
-    } else if (platform === 'win32') {
-      command = 'cmd.exe'
-      args = ['/c', 'start', ' "" ', filePath]
-    } else {
-      command = 'xdg-open'
-      args = [filePath]
+    // Use Electron's shell API to avoid shell command injection
+    const { shell } = require('electron')
+    const result = shell.openPath(filePath)
+    if (result !== '') {
+      return { success: false, error: result }
     }
-    const proc = spawn(command, args, {
-      detached: true,
-      stdio: 'ignore',
-      env: { PATH: process.env.PATH, HOME: process.env.HOME },
-    })
-    proc.unref()
     return { success: true }
   } catch (err: any) {
     return { success: false, error: err.message || '打开文件失败' }
@@ -336,9 +323,6 @@ async function extractDocxText(filePath: string): Promise<{ text?: string; markd
 // This ensures data-p-index is 100% in sync with analyzeDocxStructure,
 // avoiding the structural mismatch caused by mammoth's conversion.
 
-// Global paragraph index counter for convertDocxToIndexedHtml
-let _globalPIndex = 0
-
 async function convertDocxToIndexedHtml(filePath: string): Promise<{ html: string; error?: string }> {
   try {
     const buffer = readFileSync(filePath)
@@ -357,12 +341,59 @@ async function convertDocxToIndexedHtml(filePath: string): Promise<{ html: strin
       return { html: '', error: '未找到 w:body' }
     }
 
-    _globalPIndex = 0
+    let pIndex = 0
     const parts: string[] = []
+
+    function renderNode(el: Element): string {
+      const tag = el.tagName
+
+      if (tag === 'w:p') {
+        const style = getParagraphStyle(el)
+        const text = extractParagraphText(el)
+        const escaped = escapeHtml(text)
+        const idx = pIndex++
+
+        if (style && (style.toLowerCase().includes('heading') || style.toLowerCase().includes('标题'))) {
+          const levelMatch = style.match(/(\d+)/)
+          const level = levelMatch ? levelMatch[1] : '1'
+          const fontSize = level === '1' ? '28px' : level === '2' ? '24px' : level === '3' ? '20px' : '18px'
+          return `<h${level} data-p-index="${idx}" style="margin: 0.6em 0; font-weight: bold; font-size: ${fontSize}; color: #1a1a1a;">${escaped || '&nbsp;'}</h${level}>`
+        }
+        return `<p data-p-index="${idx}" style="margin: 0.3em 0; text-indent: 2em;">${escaped || '&nbsp;'}</p>`
+      }
+
+      if (tag === 'w:tbl') {
+        const rows: string[] = []
+        const trElements = el.getElementsByTagName('w:tr')
+        for (let i = 0; i < trElements.length; i++) {
+          const cells: string[] = []
+          const tcElements = trElements[i].getElementsByTagName('w:tc')
+          for (let j = 0; j < tcElements.length; j++) {
+            const cellParts: string[] = []
+            for (const cellChild of Array.from(tcElements[j].childNodes)) {
+              if (cellChild.nodeType !== 1) continue
+              const result = renderNode(cellChild as unknown as Element)
+              if (result) cellParts.push(result)
+            }
+            cells.push(`<td style="border: 1px solid #ccc; padding: 6px 10px;">${cellParts.join('') || '&nbsp;'}</td>`)
+          }
+          rows.push(`<tr style="background: ${i % 2 === 0 ? '#fff' : '#f8f9fa'};">${cells.join('')}</tr>`)
+        }
+        return `<table style="border-collapse: collapse; width: 100%; margin: 0.5em 0;">${rows.join('')}</table>`
+      }
+
+      // For other elements (w:r, w:tc, etc.), recursively process children
+      let result = ''
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType !== 1) continue
+        result += renderNode(child as unknown as Element)
+      }
+      return result
+    }
 
     for (const child of Array.from(body.childNodes)) {
       if (child.nodeType !== 1) continue
-      const result = renderNode(child as any)
+      const result = renderNode(child as unknown as Element)
       if (result) parts.push(result)
     }
 
@@ -371,53 +402,6 @@ async function convertDocxToIndexedHtml(filePath: string): Promise<{ html: strin
   } catch (err: any) {
     return { html: '', error: err.message || '转换失败' }
   }
-}
-
-function renderNode(el: Element): string {
-  const tag = el.tagName
-
-  if (tag === 'w:p') {
-    const style = getParagraphStyle(el)
-    const text = extractParagraphText(el)
-    const escaped = escapeHtml(text)
-    const idx = _globalPIndex++
-
-    if (style && (style.toLowerCase().includes('heading') || style.toLowerCase().includes('标题'))) {
-      const levelMatch = style.match(/(\d+)/)
-      const level = levelMatch ? levelMatch[1] : '1'
-      const fontSize = level === '1' ? '28px' : level === '2' ? '24px' : level === '3' ? '20px' : '18px'
-      return `<h${level} data-p-index="${idx}" style="margin: 0.6em 0; font-weight: bold; font-size: ${fontSize}; color: #1a1a1a;">${escaped || '&nbsp;'}</h${level}>`
-    }
-    return `<p data-p-index="${idx}" style="margin: 0.3em 0; text-indent: 2em;">${escaped || '&nbsp;'}</p>`
-  }
-
-  if (tag === 'w:tbl') {
-    const rows: string[] = []
-    const trElements = el.getElementsByTagName('w:tr')
-    for (let i = 0; i < trElements.length; i++) {
-      const cells: string[] = []
-      const tcElements = trElements[i].getElementsByTagName('w:tc')
-      for (let j = 0; j < tcElements.length; j++) {
-        const cellParts: string[] = []
-        for (const cellChild of Array.from(tcElements[j].childNodes)) {
-          if (cellChild.nodeType !== 1) continue
-          const result = renderNode(cellChild as Element)
-          if (result) cellParts.push(result)
-        }
-        cells.push(`<td style="border: 1px solid #ddd; padding: 6px 8px; vertical-align: top;">${cellParts.join('')}</td>`)
-      }
-      rows.push(`<tr>${cells.join('')}</tr>`)
-    }
-    return `<table style="border-collapse: collapse; margin: 0.8em 0; width: 100%; font-size: 14px;">${rows.join('')}</table>`
-  }
-
-  // For other elements (w:r, w:tc, etc.), recursively process children
-  let result = ''
-  for (const child of Array.from(el.childNodes)) {
-    if (child.nodeType !== 1) continue
-    result += renderNode(child as Element)
-  }
-  return result
 }
 
 function getParagraphStyle(pElement: Element): string | null {
@@ -434,6 +418,11 @@ function extractParagraphText(pElement: Element): string {
   const tElements = pElement.getElementsByTagName('w:t')
   for (let i = 0; i < tElements.length; i++) {
     texts.push(tElements[i].textContent || '')
+  }
+  // Also extract OMML math text so formulas show up in fallback HTML preview
+  const mTElements = pElement.getElementsByTagName('m:t')
+  for (let i = 0; i < mTElements.length; i++) {
+    texts.push(mTElements[i].textContent || '')
   }
   return texts.join('')
 }

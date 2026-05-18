@@ -11,7 +11,13 @@ export class Database {
     this.db = new DatabaseConstructor(DB_PATH)
   }
 
+  close() {
+    try { this.db.close() } catch {}
+  }
+
   init() {
+    // Wrap migrations in a transaction so partial failures don't leave the DB inconsistent.
+    const initTx = this.db.transaction(() => {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS workspaces (
         id TEXT PRIMARY KEY,
@@ -260,6 +266,8 @@ export class Database {
     }
 
     // Note: No default folders. Tasks without folder_id are shown in status groups.
+    }) // end transaction
+    initTx()
   }
 
   // ── Workspaces ──
@@ -438,19 +446,26 @@ export class Database {
         file_path TEXT NOT NULL,
         version INTEGER NOT NULL,
         content TEXT NOT NULL,
+        is_binary INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(file_path);
       CREATE INDEX IF NOT EXISTS idx_file_history_path_version ON file_history(file_path, version);
     `)
+    // Migration: add is_binary column if missing
+    const cols = this.db.prepare("PRAGMA table_info(file_history)").all() as any[]
+    const hasIsBinary = cols.find((c) => c.name === 'is_binary')
+    if (!hasIsBinary) {
+      this.db.prepare('ALTER TABLE file_history ADD COLUMN is_binary INTEGER NOT NULL DEFAULT 0').run()
+    }
   }
 
-  pushFileHistory(filePath: string, content: string) {
+  pushFileHistory(filePath: string, content: string, isBinary = false) {
     this.initFileHistory()
     // Get current max version
     const row = this.db.prepare('SELECT COALESCE(MAX(version), 0) as maxv FROM file_history WHERE file_path = ?').get(filePath) as any
     const nextVersion = (row?.maxv ?? 0) + 1
-    this.db.prepare('INSERT INTO file_history (file_path, version, content) VALUES (?, ?, ?)').run(filePath, nextVersion, content)
+    this.db.prepare('INSERT INTO file_history (file_path, version, content, is_binary) VALUES (?, ?, ?, ?)').run(filePath, nextVersion, content, isBinary ? 1 : 0)
     // Keep only the latest 10 versions per file
     this.db.prepare(`
       DELETE FROM file_history WHERE id IN (
@@ -460,19 +475,19 @@ export class Database {
     return nextVersion
   }
 
-  popFileHistory(filePath: string): { content: string; version: number } | null {
+  popFileHistory(filePath: string): { content: string; version: number; isBinary: boolean } | null {
     this.initFileHistory()
-    const row = this.db.prepare('SELECT content, version FROM file_history WHERE file_path = ? ORDER BY version DESC LIMIT 1').get(filePath) as any
+    const row = this.db.prepare('SELECT content, version, is_binary FROM file_history WHERE file_path = ? ORDER BY version DESC LIMIT 1').get(filePath) as any
     if (!row) return null
     this.db.prepare('DELETE FROM file_history WHERE file_path = ? AND version = ?').run(filePath, row.version)
-    return { content: row.content, version: row.version }
+    return { content: row.content, version: row.version, isBinary: !!row.is_binary }
   }
 
-  peekFileHistory(filePath: string): { content: string; version: number } | null {
+  peekFileHistory(filePath: string): { content: string; version: number; isBinary: boolean } | null {
     this.initFileHistory()
-    const row = this.db.prepare('SELECT content, version FROM file_history WHERE file_path = ? ORDER BY version DESC LIMIT 1').get(filePath) as any
+    const row = this.db.prepare('SELECT content, version, is_binary FROM file_history WHERE file_path = ? ORDER BY version DESC LIMIT 1').get(filePath) as any
     if (!row) return null
-    return { content: row.content, version: row.version }
+    return { content: row.content, version: row.version, isBinary: !!row.is_binary }
   }
 
   getFileHistoryCount(filePath: string): number {
@@ -535,6 +550,12 @@ export class Database {
   }
 
   clearKnowledgeChunks(folderId: number) {
+    // Also clean up the FTS5 index so deleted chunks don't appear in searches
+    this.db.prepare(`
+      DELETE FROM knowledge_chunks_fts WHERE rowid IN (
+        SELECT id FROM knowledge_chunks WHERE folder_id = ?
+      )
+    `).run(folderId)
     this.db.prepare('DELETE FROM knowledge_chunks WHERE folder_id = ?').run(folderId)
   }
 

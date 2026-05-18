@@ -33,6 +33,8 @@ interface EnrichedSource extends SourceItem {
 async function callLLM(config: LLMConfig, systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
   const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')
   const isAnthropic = config.provider === 'anthropic'
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 60000)
 
   if (isAnthropic) {
     const url = `${baseUrl}/messages`
@@ -50,6 +52,7 @@ async function callLLM(config: LLMConfig, systemPrompt: string, userPrompt: stri
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
+      signal: controller.signal,
     })
     if (!res.ok) {
       const err = await res.text()
@@ -78,7 +81,9 @@ async function callLLM(config: LLMConfig, systemPrompt: string, userPrompt: stri
         { role: 'user', content: userPrompt },
       ],
     }),
+    signal: controller.signal,
   })
+  clearTimeout(timeoutId)
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`API ${res.status}: ${err}`)

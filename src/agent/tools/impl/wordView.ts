@@ -8,6 +8,7 @@ import {
   getDocumentText,
   getDocumentStats,
   getDocumentIssues,
+  type DocumentRun,
 } from '../../document'
 
 const inputSchema = z.object({
@@ -65,7 +66,10 @@ export const WordViewTool: Tool<Input, { mode: string; result: any }> = {
           const paragraphs = getDocumentText(doc.body)
           return {
             data: { mode: 'text', result: paragraphs },
-            preview: `Text: ${paragraphs.length} paragraphs\n` + paragraphs.slice(0, 10).map(p => `[${p.index}] ${p.text.slice(0, 80)}${p.text.length > 80 ? '...' : ''}`).join('\n') + (paragraphs.length > 10 ? `\n... (${paragraphs.length - 10} more)` : ''),
+            preview: `Text: ${paragraphs.length} paragraphs\n` + paragraphs.slice(0, 10).map(p => {
+              const runsInfo = p.runs ? ` [${p.runs.length} runs]` : ''
+              return `[${p.index}]${runsInfo} ${p.text.slice(0, 80)}${p.text.length > 80 ? '...' : ''}`
+            }).join('\n') + (paragraphs.length > 10 ? `\n... (${paragraphs.length - 10} more)` : ''),
           }
         }
         case 'stats': {
