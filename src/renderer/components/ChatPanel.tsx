@@ -14,6 +14,7 @@ import {
   streamingTaskIdAtom,
   streamingTaskIdsAtom,
   sessionStreamingStatesAtom,
+  creationKindAtom,
   type SessionStreamingState,
 } from '../atoms'
 import { toast } from 'sonner'
@@ -26,7 +27,7 @@ import {
   Send, Paperclip, PanelRightClose, Plus, X, Sparkles, Zap, Terminal,
   ChevronDown, ChevronUp, Cable, Folder, Loader2, Flame, Copy, Check,
   Wrench, AlertCircle,
-  Trash2, Square, Quote, FlaskConical, RotateCcw,
+  Trash2, Square, Quote, FlaskConical, RotateCcw, Search, ArrowDown,
 } from 'lucide-react'
 import ModelSelector from './ModelSelector'
 import { CollapsibleQuote, parseMessageWithQuotes } from './chat/CollapsibleQuote'
@@ -38,6 +39,14 @@ import {
   toolIcons,
   getLastLine,
   extractMetadata,
+  deriveCardSummary,
+  AiMessageContent,
+  ReplyCard,
+  ReplyPopout,
+  CostMeter,
+  TodoStrip,
+  ConversationSearch,
+  ReplyDots,
 } from './chat'
 
 import type { Message as ChatMessage } from '../atoms'
@@ -71,109 +80,6 @@ import type { ProviderConfig } from '../lib/providers'
 
 // modeConfig, statusConfig, toolIcons, getLastLine, extractMetadata, FoldableSection,
 // mergeAssistantMessages now live in `./chat`.
-// ── Render AI message content (history) ──
-function AiMessageContent({ content, toolCalls: toolCallsProp, reasoningContent, onApplyToDocx }: { content: string; toolCalls?: any[]; reasoningContent?: string; onApplyToDocx?: () => void }) {
-  const { t } = useT()
-  // Legacy: parse HTML comment metadata for old messages
-  const { content: cleanContent, metadata } = extractMetadata(content)
-  const thinkFromMeta = metadata.thinkContent || ''
-  const toolCallsFromMeta = metadata.toolCalls || []
-
-  // Prefer new format, fallback to legacy metadata
-  const displayThinkContent = reasoningContent || thinkFromMeta
-  const displayToolCalls = Array.isArray(toolCallsProp) && toolCallsProp.length > 0 ? toolCallsProp : toolCallsFromMeta
-  const body = cleanContent
-
-  const [copied, setCopied] = useState(false)
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {}
-  }
-
-  return (
-    <div>
-      {/* Think section */}
-      {displayThinkContent && (
-        <div className="mb-3 overflow-hidden" style={{ borderRadius: 'var(--na-radius-md)', border: '1px solid var(--na-border-subtle)', background: 'var(--na-bg-active)' }}>
-          <FoldableSection title={t('thinkingProcess')} lastLine={getLastLine(displayThinkContent)} defaultOpen={false}>
-            {displayThinkContent}
-          </FoldableSection>
-        </div>
-      )}
-      {/* Tool call history */}
-      {displayToolCalls.length > 0 && (
-        <div className="mb-3 overflow-hidden" style={{ borderRadius: 'var(--na-radius-md)', border: '1px solid var(--na-border-subtle)', background: 'var(--na-bg-active)' }}>
-          <FoldableSection title={t('toolCalls')} lastLine={t('toolCallsCount', { count: String(displayToolCalls.length) })} defaultOpen={true}>
-            <div className="space-y-1.5">
-              {displayToolCalls.map((tc: any) => {
-                const Icon = toolIcons[tc.name] || Wrench
-                const statusColor: Record<string, string> = {
-                  running: '#2563EB',
-                  completed: '#059669',
-                  failed: '#ef4444',
-                  confirming: '#2563EB',
-                  'needs-confirmation': '#f59e0b',
-                  rejected: '#ef4444',
-                }
-                const color = statusColor[tc.status] || 'var(--na-text-tertiary)'
-                const label: Record<string, string> = {
-                  running: t('toolStatusRunning'),
-                  completed: t('toolStatusCompleted'),
-                  failed: t('toolStatusFailed'),
-                  confirming: t('toolStatusConfirming'),
-                  'needs-confirmation': t('toolStatusNeedsConfirmation'),
-                  rejected: t('toolStatusRejected'),
-                }
-                return (
-                  <div key={tc.id || tc.toolCallId} className="flex items-center gap-2 text-[12px]">
-                    <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--na-text-tertiary)' }} />
-                    <span className="font-medium" style={{ color: 'var(--na-text-secondary)' }}>{tc.name}</span>
-                    {tc.args?.path && <span className="opacity-50">— {tc.args.path}</span>}
-                    <span className="ml-auto flex items-center gap-1 text-[11px]">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
-                      {label[tc.status] || tc.status}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </FoldableSection>
-        </div>
-      )}
-      {body && (
-        <div className="markdown-body text-[13px] leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
-            {body}
-          </ReactMarkdown>
-        </div>
-      )}
-      <button
-        onClick={handleCopy}
-        className="flex items-center gap-1 mt-2 px-2 py-1 text-[11px] rounded-md transition-colors opacity-0 group-hover:opacity-100 hover:bg-[var(--na-bg-hover)]"
-        style={{ color: 'var(--na-text-tertiary)' }}
-        title={t('copyRawContent')}
-      >
-        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-        {copied ? t('copied') : t('copy')}
-      </button>
-      {onApplyToDocx && (
-        <button
-          onClick={onApplyToDocx}
-          className="flex items-center gap-1 mt-1 px-2 py-1 text-[11px] rounded-md transition-colors opacity-0 group-hover:opacity-100 hover:bg-[var(--na-bg-hover)]"
-          style={{ color: '#7C3AED' }}
-          title={t('applyToDocx')}
-        >
-          <Check className="w-3 h-3" />
-          {t('applyToDocx')}
-        </button>
-      )}
-    </div>
-  )
-}
-
 // ── Streaming work card ──
 function StreamingCard({
   content,
@@ -212,62 +118,43 @@ function StreamingCard({
           ? t('thinkingProcess')
           : t('processing')
 
+  // Top-level status shown in the card header (placeholder for the missing title).
+  const headerLabel = isStreaming
+    ? (runningTool ? t('callingTool', { name: runningTool.name })
+      : needsConfirmTool ? t('waitingConfirmShort')
+      : isThinking ? t('thinking')
+      : t('cooking'))
+    : safeToolCalls.some((tc) => tc.status === 'rejected') ? t('terminated')
+      : t('toolStatusCompleted')
+  const railColor = isStreaming
+    ? 'var(--na-primary)'
+    : safeToolCalls.some((tc) => tc.status === 'rejected') ? '#ef4444' : '#059669'
+
   return (
     <div className="flex-1 min-w-0">
       <div className="text-[12px] font-medium mb-1" style={{ color: 'var(--na-text-secondary)' }}>
         Note Agent
       </div>
 
-      {/* Work-in-progress card */}
+      {/* Active card — same shell as the expanded reply card, so streaming →
+          finished reads as one continuous card. */}
       <div
-        className="mb-3 overflow-hidden"
-        style={{
-          borderRadius: 'var(--na-radius-md)',
-          border: '1px solid var(--na-border-subtle)',
-          background: 'var(--na-bg-active)',
-        }}
+        className="relative rounded-xl overflow-hidden na-expand-in"
+        style={{ border: '1px solid var(--na-primary-soft)', background: 'var(--na-bg-card)', boxShadow: 'var(--na-shadow-sm)' }}
       >
-        {/* Header: cooking status */}
-        <div className="flex items-center gap-2 px-3 py-2">
-          {isStreaming ? (
-            <>
-              <Flame
-                className="w-3.5 h-3.5 shrink-0"
-                style={{
-                  color: mode ? modeConfig[mode].color : 'var(--na-status-explore)',
-                }}
-              />
-              <span
-                className="text-[11px] font-medium"
-                style={{ color: 'var(--na-text-secondary)' }}
-              >
-                {isThinking ? t('thinking') : needsConfirmTool ? t('waitingConfirmShort') : t('cooking')}
-              </span>
-              <Loader2
-                className="w-3 h-3 shrink-0 animate-spin"
-                style={{ color: 'var(--na-text-tertiary)' }}
-              />
-            </>
-          ) : safeToolCalls.length > 0 ? (
-            <>
-              {safeToolCalls.some((t) => t.status === 'rejected') ? (
-                <X className="w-3.5 h-3.5 shrink-0" style={{ color: '#ef4444' }} />
-              ) : (
-                <Check className="w-3.5 h-3.5 shrink-0" style={{ color: '#059669' }} />
-              )}
-              <span
-                className="text-[11px] font-medium"
-                style={{ color: 'var(--na-text-secondary)' }}
-              >
-                {safeToolCalls.some((tc) => tc.status === 'rejected') ? t('terminated') : t('toolStatusCompleted')}
-              </span>
-            </>
-          ) : null}
+        {/* Header bar: animated accent rail + status + spinner */}
+        <div className="flex items-center gap-2 px-3.5 py-2.5" style={{ borderBottom: '1px solid var(--na-border-subtle)' }}>
+          <span className={`shrink-0 w-1 h-4 rounded-full ${isStreaming ? 'na-pulse' : ''}`} style={{ background: railColor }} />
+          <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--na-text-primary)' }}>{headerLabel}</span>
+          {isStreaming && <Loader2 className="w-3 h-3 animate-spin shrink-0" style={{ color: 'var(--na-text-tertiary)' }} />}
         </div>
+
+        {/* Body */}
+        <div className="px-4 py-3">
 
         {/* Think + Tools foldable section */}
         {(thinkContent || safeToolCalls.length > 0) && (
-          <div style={{ borderTop: '1px solid var(--na-border-subtle)' }}>
+          <div className="mb-2 rounded-lg overflow-hidden" style={{ border: '1px solid var(--na-border-subtle)' }}>
             <button
               onClick={() => setThinkExpanded(!thinkExpanded)}
               className="flex items-center gap-2 w-full px-3 py-2 text-left transition-colors hover:bg-[var(--na-bg-hover)]"
@@ -400,16 +287,25 @@ function StreamingCard({
           </div>
         )}
 
-      </div>
+        {/* Streamed content — grows as the agent responds */}
+        {content ? (
+          <div className="markdown-body text-[13px] leading-relaxed">
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+              {content}
+            </ReactMarkdown>
+          </div>
+        ) : (!thinkContent && safeToolCalls.length === 0) ? (
+          // Pure thinking — an animated placeholder so the card is never empty.
+          <div className="flex items-center gap-1 py-1 text-[12px]" style={{ color: 'var(--na-text-tertiary)' }}>
+            <span className="na-typing-dot" />
+            <span className="na-typing-dot" style={{ animationDelay: '0.15s' }} />
+            <span className="na-typing-dot" style={{ animationDelay: '0.3s' }} />
+            <span className="ml-1.5">{isThinking ? t('thinking') : t('processing')}…</span>
+          </div>
+        ) : null}
 
-      {/* Normal streamed response */}
-      {content && (
-        <div className="markdown-body text-[13px] leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
-            {content}
-          </ReactMarkdown>
-        </div>
-      )}
+        </div>{/* /body */}
+      </div>{/* /active card */}
     </div>
   )
 }
@@ -425,6 +321,7 @@ export default function ChatPanel({
   const [messages, setMessages] = useAtom(messagesAtom)
   const [session, setSession] = useAtom(currentSessionAtom)
   const task = useAtomValue(currentTaskAtom)
+  const [creationKindMap, setCreationKindMap] = useAtom(creationKindAtom)
   const [tasks, setTasks] = useAtom(tasksAtom)
   const workspace = useAtomValue(currentWorkspaceAtom)
   const [editorState] = useAtom(editorStateAtom)
@@ -449,6 +346,44 @@ export default function ChatPanel({
   const [showStatusSelect, setShowStatusSelect] = useState(false)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [textQuotes, setTextQuotes] = useState<TextQuote[]>([])
+  // Which reply is popped out to a floating window (by message id).
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  // Inline "long card" expansion. The latest reply auto-expands; sending a new
+  // message makes the old one no longer latest, so it folds on its own. These
+  // sets only track the user's manual overrides on top of that default.
+  const [manualExpanded, setManualExpanded] = useState<Set<string>>(new Set())
+  const [manualCollapsed, setManualCollapsed] = useState<Set<string>>(new Set())
+  const toggleInline = (id: string, isLatest: boolean, currentlyExpanded: boolean) => {
+    if (currentlyExpanded) {
+      // Collapse: for the latest, record an override; otherwise drop the manual-expand.
+      if (isLatest) setManualCollapsed((p) => new Set(p).add(id))
+      else setManualExpanded((p) => { const n = new Set(p); n.delete(id); return n })
+    } else {
+      if (isLatest) setManualCollapsed((p) => { const n = new Set(p); n.delete(id); return n })
+      else setManualExpanded((p) => new Set(p).add(id))
+    }
+  }
+  // Conversation search overlay + "scrolled away from bottom" state.
+  const [showSearch, setShowSearch] = useState(false)
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [activeReplyId, setActiveReplyId] = useState<string | null>(null)
+  const messagesScrollRef = useRef<HTMLDivElement>(null)
+
+  // Scroll the messages area to a specific reply (used by the reply-dots rail).
+  const jumpToReply = (id: string) => {
+    const el = messagesScrollRef.current?.querySelector(`[data-msg-id="${CSS.escape(id)}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  // Collapse composer toolbar labels to icons when the panel is narrow.
+  const [toolbarNarrow, setToolbarNarrow] = useState(false)
+  const composerToolbarRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = composerToolbarRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setToolbarNarrow(el.clientWidth < 440))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [questionQueue, setQuestionQueue] = useState<Array<{ question: string; options?: string[] }>>([])
   const [canUndo, setCanUndo] = useState(false)
@@ -750,6 +685,17 @@ export default function ChatPanel({
     }
   }, [isStreaming, streamingContent])
 
+  // When streaming FINISHES, the streaming card is swapped for the expanded
+  // reply card (a reflow that otherwise jumps the view to the top of the new
+  // card). If the user was following at the bottom, keep them there.
+  const prevStreamingRef = useRef(false)
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && !showJumpToLatest) {
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'auto' }), 60)
+    }
+    prevStreamingRef.current = isStreaming
+  }, [isStreaming, showJumpToLatest])
+
   // Scroll to bottom when switching sessions so user sees newest messages
   useEffect(() => {
     if (session?.id && messages.length > 0) {
@@ -1010,6 +956,8 @@ export default function ChatPanel({
         dataSources: selectedDataSources.kbFolderIds.length > 0 || selectedDataSources.apis.length > 0 || selectedDataSources.mcpServers.length > 0
           ? selectedDataSources
           : undefined,
+        // Gated install context: only set for tasks created via +Skill/+MCP/+API.
+        createKind: task ? creationKindMap[task.id] : undefined,
       })
       // Persist mode + tier/model overrides to session
       if (session.id) {
@@ -1165,6 +1113,7 @@ export default function ChatPanel({
         dataSources: selectedDataSources.kbFolderIds.length > 0 || selectedDataSources.apis.length > 0 || selectedDataSources.mcpServers.length > 0
           ? selectedDataSources
           : undefined,
+        createKind: task ? creationKindMap[task.id] : undefined,
       })
     } catch (e: any) {
       toast.error(t('retryFailed') + ': ' + e.message)
@@ -1525,9 +1474,49 @@ export default function ChatPanel({
     )
   }
 
+  // Parse a stored message's tool_calls JSON column into an array.
+  const parseMsgToolCalls = (m: ChatMessage): any[] | undefined => {
+    if (!m.tool_calls || typeof m.tool_calls !== 'string') return undefined
+    try {
+      const parsed = JSON.parse(m.tool_calls)
+      return Array.isArray(parsed) ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  // Build the "apply this reply to the quoted paragraph" handler (only when a
+  // text quote is active). Shared by the inline card body and the pop-out.
+  const buildApplyToDocx = (m: ChatMessage): (() => void) | undefined => {
+    if (textQuotes.length === 0) return undefined
+    return () => {
+      const quote = textQuotes[0]
+      if (!quote) return
+      let cleaned = m.content.replace(/```[\s\S]*?```/g, '').replace(/`([^`]+)`/g, '$1').trim()
+      const markers = ['修改后', '优化后', '替换为', '新版本', '修改结果']
+      for (const mk of markers) {
+        const idx = cleaned.indexOf(mk)
+        if (idx !== -1) {
+          const after = cleaned.slice(idx + mk.length).trim()
+          if (after.length > 10) { cleaned = after.replace(/^[：:]\s*/, '').trim(); break }
+        }
+      }
+      const defaultText = cleaned.slice(0, 500)
+      const newText = window.prompt(`${t('applyToParagraph')} ${quote.fileName} ${t('youCanEditBelow')}`, defaultText)
+      if (!newText || !newText.trim()) return
+      const paraIdx = quote.paragraphs[0]?.index ?? 0
+      window.electronAPI.wordReplaceParagraph(quote.filePath, paraIdx, newText.trim())
+        .then((result) => {
+          if (result.success) { toast.success(t('docUpdated')); setTextQuotes([]) }
+          else { toast.error(t('updateFailed') + ': ' + (result.error || t('unknownError'))) }
+        })
+        .catch((e: any) => { toast.error(t('updateFailed') + ': ' + (e.message || t('unknownError'))) })
+    }
+  }
+
   return (
     <div
-      className="flex flex-col h-full min-w-0 overflow-x-hidden"
+      className="relative flex flex-col h-full min-w-0 overflow-x-hidden"
       style={{ background: 'var(--na-bg-panel)' }}
     >
       {/* Header */}
@@ -1558,7 +1547,17 @@ export default function ChatPanel({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          <CostMeter sessionId={session?.id} isStreaming={isStreaming} />
+          <button
+            onClick={() => setShowSearch(true)}
+            disabled={!task}
+            className="p-2 rounded-lg transition-colors hover:bg-[var(--na-bg-hover)] disabled:opacity-40"
+            style={{ color: 'var(--na-text-tertiary)' }}
+            title={t('search') || 'Search conversations'}
+          >
+            <Search className="w-4 h-4" />
+          </button>
           <button
             onClick={onToggle}
             className="p-2 rounded-lg transition-colors hover:bg-[var(--na-bg-hover)]"
@@ -1570,8 +1569,26 @@ export default function ChatPanel({
         </div>
       </div>
 
+      {/* Todo strip (collapsed dots → expand) */}
+      <TodoStrip sessionId={session?.id} isStreaming={isStreaming} />
+
       {/* Messages */}
-      <div className="flex-1 overflow-auto">
+      <div
+        ref={messagesScrollRef}
+        className="flex-1 overflow-auto"
+        style={{ background: 'var(--na-bg-canvas)' }}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+          setShowJumpToLatest(!nearBottom)
+          // Track which reply is at the top of the viewport for the dots rail.
+          const tops = el.querySelectorAll('[data-msg-id]')
+          let current: string | null = null
+          const ref = el.getBoundingClientRect().top + 80
+          tops.forEach((n) => { if (n.getBoundingClientRect().top <= ref) current = (n as HTMLElement).dataset.msgId || current })
+          if (current) setActiveReplyId(current)
+        }}
+      >
         {messages.length === 0 && !isStreaming && !task && (
           <div className="flex flex-col items-center justify-center h-full px-8 text-center">
             <div
@@ -1621,6 +1638,22 @@ export default function ChatPanel({
                   ? ` ${t('askModeDesc')}`
                   : ` ${t('executeModeDesc')}`}
             </p>
+            {/* Suggested starter prompts — click to prefill the composer. */}
+            <div className="flex flex-wrap gap-2 justify-center mt-5 max-w-[420px]">
+              {[t('suggestSummarize') || 'Summarize the open document',
+                t('suggestOutline') || 'Draft an outline for this task',
+                t('suggestResearch') || 'Research and cite recent sources']
+                .map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => { setInput(s); textareaRef.current?.focus() }}
+                    className="px-3 py-1.5 text-[12px] rounded-full transition-colors hover:bg-[var(--na-bg-hover)]"
+                    style={{ border: '1px solid var(--na-border-subtle)', color: 'var(--na-text-secondary)', background: 'var(--na-bg-active)' }}
+                  >
+                    {s}
+                  </button>
+                ))}
+            </div>
           </div>
         )}
         <div className="px-4 py-4 space-y-5">
@@ -1638,9 +1671,10 @@ export default function ChatPanel({
               }
             }
             const showAgentHeader = !isUser && prevVisibleRole !== 'assistant'
+            const isLatestAssistant = !isUser && arr.map((m) => m.role).lastIndexOf('assistant') === index
 
             return (
-              <div key={msg.id} className="group">
+              <div key={msg.id} data-msg-id={msg.id} className="group">
                 {/* User message — right-aligned bubble */}
                 {isUser && (
                   <div className="flex justify-end">
@@ -1700,60 +1734,23 @@ export default function ChatPanel({
                           Note Agent
                         </div>
                       )}
-                      <AiMessageContent
-                        content={msg.content}
-                        toolCalls={(() => {
-                          if (!msg.tool_calls || typeof msg.tool_calls !== 'string') return undefined
-                          try {
-                            const parsed = JSON.parse(msg.tool_calls)
-                            return Array.isArray(parsed) ? parsed : undefined
-                          } catch {
-                            return undefined
-                          }
-                        })()}
-                        reasoningContent={msg.reasoningContent || undefined}
-                        onApplyToDocx={textQuotes.length > 0 ? () => {
-                          const quote = textQuotes[0]
-                          if (!quote) return
-                          // Extract plain text from AI reply (remove markdown code blocks)
-                          let cleaned = msg.content
-                            .replace(/```[\s\S]*?```/g, '')
-                            .replace(/`([^`]+)`/g, '$1')
-                            .trim()
-                          // Try to find content after "修改后" or similar markers
-                          const markers = ['修改后', '优化后', '替换为', '新版本', '修改结果']
-                          for (const m of markers) {
-                            const idx = cleaned.indexOf(m)
-                            if (idx !== -1) {
-                              const after = cleaned.slice(idx + m.length).trim()
-                              if (after.length > 10) {
-                                cleaned = after.replace(/^[：:]\s*/, '').trim()
-                                break
-                              }
-                            }
-                          }
-                          const defaultText = cleaned.slice(0, 500)
-                          const newText = window.prompt(
-                            `${t('applyToParagraph')} ${quote.fileName} ${t('youCanEditBelow')}`,
-                            defaultText,
-                          )
-                          if (!newText || !newText.trim()) return
-                          const paraIdx = quote.paragraphs[0]?.index ?? 0
-                          window.electronAPI.wordReplaceParagraph(quote.filePath, paraIdx, newText.trim())
-                            .then((result) => {
-                              if (result.success) {
-                                toast.success(t('docUpdated'))
-                                // Clear quotes after applying
-                                setTextQuotes([])
-                              } else {
-                                toast.error(t('updateFailed') + ': ' + (result.error || t('unknownError')))
-                              }
-                            })
-                            .catch((e: any) => {
-                              toast.error(t('updateFailed') + ': ' + (e.message || t('unknownError')))
-                            })
-                        } : undefined}
-                      />
+                      {(() => {
+                        // The latest reply auto-expands — but not while a NEW reply is
+                        // streaming (the previous one folds; the streaming card takes over).
+                        const inlineExpanded = (isLatestAssistant && !isStreaming && !manualCollapsed.has(msg.id)) || manualExpanded.has(msg.id)
+                        return (
+                          <ReplyCard
+                            content={msg.content}
+                            toolCalls={parseMsgToolCalls(msg)}
+                            reasoningContent={msg.reasoningContent || undefined}
+                            onApplyToDocx={buildApplyToDocx(msg)}
+                            expanded={inlineExpanded}
+                            onToggleExpand={() => toggleInline(msg.id, isLatestAssistant, inlineExpanded)}
+                            onPopout={() => setExpandedId(msg.id)}
+                            onRetry={isLatestAssistant && !isStreaming ? handleRetryLastMessage : undefined}
+                          />
+                        )
+                      })()}
                     </div>
                   </div>
                 )}
@@ -1856,16 +1853,16 @@ export default function ChatPanel({
                         {tc.name === 'editFile' && tc.args?.path && (
                           <div className="mt-1.5">
                             <div className="text-[11px]" style={{ color: 'var(--na-text-tertiary)' }}>{t('editFile')}: {tc.args.path}</div>
-                            {tc.args?.oldString && (
+                            {(tc.args?.search ?? tc.args?.oldString) && (
                               <div className="mt-1 p-2 rounded text-[11px] font-mono whitespace-pre-wrap overflow-auto max-h-[80px]" style={{ background: 'var(--na-bg-panel)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}>
                                 <div style={{ color: 'var(--na-text-tertiary)' }}>{t('deleteLines')}:</div>
-                                {String(tc.args.oldString).slice(0, 300)}{String(tc.args.oldString).length > 300 ? '...' : ''}
+                                {String(tc.args.search ?? tc.args.oldString).slice(0, 300)}{String(tc.args.search ?? tc.args.oldString).length > 300 ? '...' : ''}
                               </div>
                             )}
-                            {tc.args?.newString && (
+                            {(tc.args?.replace ?? tc.args?.newString) && (
                               <div className="mt-1 p-2 rounded text-[11px] font-mono whitespace-pre-wrap overflow-auto max-h-[80px]" style={{ background: 'var(--na-bg-panel)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}>
                                 <div style={{ color: '#059669' }}>{t('replaceWith')}:</div>
-                                {String(tc.args.newString).slice(0, 300)}{String(tc.args.newString).length > 300 ? '...' : ''}
+                                {String(tc.args.replace ?? tc.args.newString).slice(0, 300)}{String(tc.args.replace ?? tc.args.newString).length > 300 ? '...' : ''}
                               </div>
                             )}
                           </div>
@@ -2142,7 +2139,7 @@ export default function ChatPanel({
 
         {/* Big Modern Input Container */}
         <div
-          className="flex flex-col"
+          className="flex flex-col na-composer transition-shadow"
           style={{
             borderRadius: 'var(--na-radius-xl)',
             border: '1px solid var(--na-border-default)',
@@ -2333,7 +2330,9 @@ export default function ChatPanel({
               isStreaming && streamingTaskId === task?.id
                 ? t('aiThinkingPlaceholder')
                 : task
-                  ? t('inputMessagePlaceholder')
+                  ? (task && creationKindMap[task.id]
+                      ? t(`installPlaceholder_${creationKindMap[task.id]}` as any)
+                      : t('inputMessagePlaceholder'))
                   : t('selectTaskToChat')
             }
             disabled={!task}
@@ -2352,10 +2351,11 @@ export default function ChatPanel({
           />
 
           {/* Bottom toolbar inside container — no top border */}
-          <div className="flex items-center justify-between px-3 pb-1 pt-0">
-            <div className="flex items-center gap-1">
+          <div ref={composerToolbarRef} className="flex items-center justify-between px-3 pb-1 pt-0">
+            <div className="flex items-center gap-1 min-w-0 flex-1">
               <button
                 onClick={handleAttach}
+                title={t('attachments')}
                 className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors hover:bg-[var(--na-bg-hover)]"
                 style={{
                   borderRadius: 'var(--na-radius-md)',
@@ -2363,7 +2363,7 @@ export default function ChatPanel({
                 }}
               >
                 <Paperclip className="w-3.5 h-3.5" />
-                {t('attachments')}
+                {!toolbarNarrow && t('attachments')}
               </button>
               {/* Data source selector */}
               <div className="relative">
@@ -2375,20 +2375,21 @@ export default function ChatPanel({
                     }
                   }}
                   onClick={() => setShowDataSourcePanel(!showDataSourcePanel)}
+                  title={t('dataSources')}
                   className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors hover:bg-[var(--na-bg-hover)]"
                   style={{
                     borderRadius: 'var(--na-radius-md)',
                     color: (selectedDataSources.kbFolderIds.length > 0 || selectedDataSources.apis.length > 0 || selectedDataSources.mcpServers.length > 0)
-                      ? '#7C3AED'
+                      ? 'var(--na-primary)'
                       : 'var(--na-text-tertiary)',
                     background: (selectedDataSources.kbFolderIds.length > 0 || selectedDataSources.apis.length > 0 || selectedDataSources.mcpServers.length > 0)
-                      ? 'rgba(124,58,237,0.08)'
+                      ? 'var(--na-primary-soft)'
                       : 'transparent',
                   }}
                 >
                   <FlaskConical className="w-3.5 h-3.5" />
-                  {t('dataSources')}
-                  <ChevronDown className="w-3 h-3" />
+                  {!toolbarNarrow && t('dataSources')}
+                  {!toolbarNarrow && <ChevronDown className="w-3 h-3" />}
                   {(selectedDataSources.kbFolderIds.length + selectedDataSources.apis.length + selectedDataSources.mcpServers.length) > 0 && (
                     <span className="ml-0.5 text-[10px] font-medium">
                       {selectedDataSources.kbFolderIds.length + selectedDataSources.apis.length + selectedDataSources.mcpServers.length}
@@ -2511,15 +2512,16 @@ export default function ChatPanel({
                 )}
               </div>
               <button
-                className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors"
+                title={workspace?.name || t('noWorkspaceSelected')}
+                className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors min-w-0"
                 style={{
                   borderRadius: 'var(--na-radius-md)',
                   color: 'var(--na-text-tertiary)',
                   cursor: 'default',
                 }}
               >
-                <Folder className="w-3.5 h-3.5" />
-                {workspace?.name || t('noWorkspaceSelected')}
+                <Folder className="w-3.5 h-3.5 shrink-0" />
+                {!toolbarNarrow && <span className="truncate">{workspace?.name || t('noWorkspaceSelected')}</span>}
               </button>
             </div>
 
@@ -2585,7 +2587,40 @@ export default function ChatPanel({
                   </ModelSelector>
                 )}
               </div>
-
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Undo last submit — to the LEFT of send */}
+              {session?.id && messages.length > 0 && !isStreaming && (
+                <button
+                  onClick={async () => {
+                    if (!canUndo) return
+                    if (!confirm(t('confirmUndo'))) return
+                    try {
+                      const result = await window.electronAPI.agentUndoAll(session.id)
+                      if (result.success) {
+                        setCanUndo(false)
+                        toast.success(t('undoneFiles', { count: String(result.restored) }))
+                        window.dispatchEvent(new CustomEvent('file:refresh-all'))
+                      } else {
+                        toast.error(result.error || t('undoFailed'))
+                      }
+                    } catch (e: any) {
+                      toast.error(t('undoFailed') + ': ' + e.message)
+                    }
+                  }}
+                  disabled={!canUndo}
+                  className="p-2 rounded-lg shrink-0 transition-all"
+                  style={{
+                    borderRadius: 'var(--na-radius-md)',
+                    color: canUndo ? 'var(--na-text-tertiary)' : 'var(--na-text-disabled)',
+                    opacity: canUndo ? 1 : 0.4,
+                    cursor: canUndo ? 'pointer' : 'not-allowed',
+                  }}
+                  title={canUndo ? t('undoLastChange') : t('noUndoAvailable')}
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+              )}
               {isStreaming ? (
                 <button
                   onClick={async () => {
@@ -2624,11 +2659,11 @@ export default function ChatPanel({
                     borderRadius: 'var(--na-radius-md)',
                     background:
                       (input.trim() || attachments.length > 0) && task
-                        ? 'var(--na-accent)'
+                        ? 'var(--na-primary-strong)'
                         : 'transparent',
                     color:
                       (input.trim() || attachments.length > 0) && task
-                        ? '#fff'
+                        ? 'var(--na-primary-contrast)'
                         : 'var(--na-text-tertiary)',
                     opacity:
                       (input.trim() || attachments.length > 0) && task
@@ -2639,45 +2674,58 @@ export default function ChatPanel({
                   <Send className="w-4 h-4" />
                 </button>
               )}
-              {/* Undo last submit changes */}
-              {session?.id && messages.length > 0 && !isStreaming && (
-                <button
-                  onClick={async () => {
-                    if (!canUndo) return
-                    if (!confirm(t('confirmUndo'))) return
-                    try {
-                      const result = await window.electronAPI.agentUndoAll(session.id)
-                      if (result.success) {
-                        setCanUndo(false)
-                        toast.success(t('undoneFiles', { count: String(result.restored) }))
-                        // Refresh file content in editor
-                        window.dispatchEvent(new CustomEvent('file:refresh-all'))
-                      } else {
-                        toast.error(result.error || t('undoFailed'))
-                      }
-                    } catch (e: any) {
-                      toast.error(t('undoFailed') + ': ' + e.message)
-                    }
-                  }}
-                  disabled={!canUndo}
-                  className="p-2 rounded-lg shrink-0 transition-all"
-                  style={{
-                    borderRadius: 'var(--na-radius-md)',
-                    color: canUndo ? 'var(--na-text-tertiary)' : 'var(--na-text-disabled)',
-                    opacity: canUndo ? 1 : 0.4,
-                    cursor: canUndo ? 'pointer' : 'not-allowed',
-                  }}
-                  title={canUndo ? t('undoLastChange') : t('noUndoAvailable')}
-                >
-                  <RotateCcw className="w-4 h-4" />
-                </button>
-              )}
             </div>
           </div>
         </div>
       </div>
 
+      {/* Reply navigation dots — one per agent reply; click to jump */}
+      <ReplyDots
+        replies={mergeAssistantMessages(messages)
+          .filter((m) => m.role === 'assistant')
+          .map((m) => ({ id: m.id, summary: deriveCardSummary(extractMetadata(m.content).content) }))}
+        activeId={activeReplyId}
+        onJump={jumpToReply}
+      />
 
+      {/* Jump to latest — shown when scrolled away from the bottom */}
+      {showJumpToLatest && messages.length > 0 && (
+        <button
+          onClick={() => {
+            const el = messagesScrollRef.current
+            if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+          }}
+          className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 px-3 py-1.5 rounded-full text-[11px] shadow-md transition-all hover:-translate-y-0.5"
+          style={{ bottom: 132, background: 'var(--na-bg-popover)', color: 'var(--na-text-secondary)', border: '1px solid var(--na-border-subtle)' }}
+        >
+          <ArrowDown className="w-3.5 h-3.5" />
+          {t('jumpToLatest') || 'Latest'}
+        </button>
+      )}
+
+      {/* Conversation search overlay */}
+      {showSearch && (
+        <ConversationSearch
+          sessionId={session?.id}
+          workspacePath={workspace?.path}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
+
+      {/* Popped-out reply view (fills the panel with a small margin) */}
+      {expandedId && (() => {
+        const m = mergeAssistantMessages(messages).find((x) => x.id === expandedId && x.role === 'assistant')
+        if (!m) return null
+        return (
+          <ReplyPopout
+            content={m.content}
+            toolCalls={parseMsgToolCalls(m)}
+            reasoningContent={m.reasoningContent || undefined}
+            onApplyToDocx={buildApplyToDocx(m)}
+            onClose={() => setExpandedId(null)}
+          />
+        )
+      })()}
     </div>
   )
 }

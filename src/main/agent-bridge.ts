@@ -30,6 +30,12 @@ import {
   WebSearchTool,
   BrowseTool,
   TodoWriteTool,
+  UpdateMemoryTool,
+  RecallHistoryTool,
+  StartBackgroundTaskTool,
+  ListBackgroundTasksTool,
+  ReadBackgroundTaskTool,
+  StopBackgroundTaskTool,
   AskUserQuestionTool,
   SubagentTool,
   setSubagentParentConfig,
@@ -44,9 +50,6 @@ import {
   SearchSemanticScholarTool,
   SearchPubMedTool,
   ReplaceWordParagraphTool,
-  AddWordParagraphTool,
-  DeleteWordParagraphTool,
-  ModifyWordFormatTool,
   PathJoinTool,
   WordViewTool,
   WordGetTool,
@@ -66,7 +69,23 @@ import {
 } from '../agent'
 import { MCPClient, loadMCPConfig } from '../agent/mcp/client'
 import { createMCPTool } from '../agent/mcp/tool-bridge'
+import { extractKeyPoints, appendSessionMemory } from '../agent/memory'
+import { backgroundTasks } from '../agent/tools/impl/background-task-manager'
+import { createLLMClient } from '../agent'
+import { InstallSkillTool } from '../agent/tools/impl/installSkill'
+import { InstallMcpTool } from '../agent/tools/impl/installMcp'
+import { InstallApiTool } from '../agent/tools/impl/installApi'
 import type { Message, AgentEvent, LLMConfig, PermissionMode } from '../agent'
+
+/** Kind of "create" session triggered from the UI (Sidebar +Skill/+MCP/+API). */
+export type CreateKind = 'skill' | 'mcp' | 'api'
+/** Install tools gated to a specific create context. Invisible in normal chat. */
+const INSTALL_TOOL_NAMES = ['installSkill', 'installMcp', 'installApi']
+const CREATE_KIND_TOOL: Record<CreateKind, string> = {
+  skill: 'installSkill',
+  mcp: 'installMcp',
+  api: 'installApi',
+}
 import type { Database } from './db'
 import { existsSync, readFileSync } from 'fs'
 import { join, isAbsolute } from 'path'
@@ -118,6 +137,12 @@ function initTools() {
     WebSearchTool,
     BrowseTool,
     TodoWriteTool,
+    UpdateMemoryTool,
+    RecallHistoryTool,
+    StartBackgroundTaskTool,
+    ListBackgroundTasksTool,
+    ReadBackgroundTaskTool,
+    StopBackgroundTaskTool,
     AskUserQuestionTool,
     SubagentTool,
     SkillTool,
@@ -131,9 +156,6 @@ function initTools() {
     SearchSemanticScholarTool,
     SearchPubMedTool,
     ReplaceWordParagraphTool,
-    AddWordParagraphTool,
-    DeleteWordParagraphTool,
-    ModifyWordFormatTool,
     PathJoinTool,
     WordViewTool,
     WordGetTool,
@@ -144,6 +166,9 @@ function initTools() {
     WordRawTool,
     WordFillTemplateTool,
     CreateDocumentTool,
+    InstallSkillTool,
+    InstallMcpTool,
+    InstallApiTool,
     DoneTool,
   ]
   tools.forEach(registerTool)
@@ -243,6 +268,8 @@ interface SessionState {
   baseConfig: LLMConfig
   /** Selected data sources for this session */
   dataSources?: DataSourceSelection
+  /** Gated "create" context (skill/mcp/api); gates the matching install tool. */
+  createKind?: CreateKind
   /** Files modified during this session (for undo-all) */
   modifiedFiles: Set<string>
   /** Whether the last submit has modifications that can be undone */
@@ -452,6 +479,7 @@ function getOrCreateSessionState(
   tierOverride?: 'weak' | 'medium' | 'strong',
   modelOverride?: string,
   dataSources?: DataSourceSelection,
+  createKind?: CreateKind,
 ): SessionState {
   let state = sessions.get(sessionId)
 
@@ -467,15 +495,27 @@ function getOrCreateSessionState(
 
   // If mode changed, recreate engine to update visible tools
   const modeChanged = state && state.engine.getMode() !== mode
+  // If the gated create-context changed, recreate to add/remove the install tool
+  const createKindChanged = state && state.createKind !== createKind
 
-  if (!state || configChanged || modeChanged) {
+  if (!state || configChanged || modeChanged || createKindChanged) {
     initTools()
 
     // Filter tools by mode: explore mode only shows read-only tools
     const allTools = getAllTools()
-    const visibleTools = mode === 'explore'
+    let visibleTools = mode === 'explore'
       ? allTools.filter((t) => t.isReadOnly())
       : allTools
+
+    // Gate the install tools: they are NEVER visible in normal chat. First
+    // strip ALL install tools, then (only in a create-context triggered by the
+    // UI's +Skill/+MCP/+API button) add back the single matching tool — even in
+    // explore mode, since installing requires a write tool.
+    visibleTools = visibleTools.filter((t) => !INSTALL_TOOL_NAMES.includes(t.name))
+    if (createKind) {
+      const wanted = allTools.find((t) => t.name === CREATE_KIND_TOOL[createKind])
+      if (wanted && !visibleTools.includes(wanted)) visibleTools = [...visibleTools, wanted]
+    }
 
     // Allow user override via setting `agentMaxRounds` (clamped to [5, 200]).
     // Default 50 covers multi-step tasks like ppt/docx generation. The
@@ -546,6 +586,7 @@ function getOrCreateSessionState(
       tierOverride,
       modelOverride,
       dataSources,
+      createKind,
       modifiedFiles: new Set(),
       canUndo: false,
     }
@@ -554,11 +595,46 @@ function getOrCreateSessionState(
     state.engine.setMode(mode)
     // Update data sources on each submit so user can change them per message
     state.dataSources = dataSources
+    state.createKind = createKind
   }
   return state
 }
 
+/**
+ * Opt-in prompt tidying: ask the FAST model for a short structured "task brief"
+ * (goal · target files · constraints) that is prepended as CONTEXT — the user's
+ * original message is kept verbatim. Bounded by a timeout; returns null on any
+ * failure so it never blocks a submit.
+ */
+async function generateTaskBrief(userInput: string, openFiles: string[], config: LLMConfig): Promise<string | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 12000)
+  try {
+    const client = createLLMClient(config)
+    const sys =
+      'You are a planning assistant for a coding/writing agent. Read the user request and produce a SHORT task brief (3-5 lines max): the GOAL, the TARGET file(s), and key CONSTRAINTS. ' +
+      'Do NOT answer or perform the task, and do NOT add anything the user did not imply. Reply in the user\'s language. Output only the brief.'
+    const ctxFiles = openFiles.length ? `\n\nOpen files (active last): ${openFiles.join(', ')}` : ''
+    const msgs: Message[] = [
+      { role: 'system', content: sys },
+      { role: 'user', content: userInput + ctxFiles },
+    ]
+    let out = ''
+    for await (const ev of client.stream(msgs, [], controller.signal)) {
+      if (ev.type === 'text') out += ev.text
+    }
+    out = out.trim()
+    return out.length > 0 ? out.slice(0, 600) : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function clearSessionState(sessionId: string) {
+  // Kill any background tasks belonging to this session so they don't orphan.
+  try { backgroundTasks.killSession(sessionId) } catch {}
   sessions.delete(sessionId)
 }
 
@@ -616,12 +692,15 @@ function resolveFileReferences(
   // 2. Keyword-based resolution
   const lower = userInput.toLowerCase()
 
-  // Explicit current-file references
+  // Explicit current-file references (Chinese + English)
   const currentFileKeywords = [
     '这个文件', '当前文件', '该文件', '此文件',
     '针对这个文件', '关于这个文件', '在这个文件里',
     '把这个文件', '改这个文件', '修改这个', '改一下这个',
     '优化这个文件', '调整这个文件', '修复这个文件',
+    '这个文档', '当前文档', '这份文档',
+    'this file', 'current file', 'the file', 'this doc', 'this document',
+    'the document', 'current document', 'the doc',
   ]
   if (currentFileKeywords.some((kw) => lower.includes(kw))) {
     if (openFiles.length > 0) {
@@ -629,20 +708,28 @@ function resolveFileReferences(
     }
   }
 
-  // Implicit edit intent without explicit file mention — default to current file
-  // Only trigger when no @mentions exist and message looks like an edit request
+  // Implicit edit intent without explicit file mention — default to current file.
+  // Only trigger when no @mentions exist and message looks like an edit request.
   if (atMentions === null) {
-    const editVerbs = ['修改', '改', '优化', '调整', '修复', '重构', '更新']
+    const editVerbs = [
+      '修改', '改', '优化', '调整', '修复', '重构', '更新',
+      'edit', 'fix', 'modify', 'change', 'update', 'refactor', 'improve', 'rewrite', 'optimize', 'adjust', 'revise',
+    ]
     const hasEditVerb = editVerbs.some((v) => lower.includes(v))
-    // Exclude if user explicitly mentions another file context
-    const hasFileContext = lower.includes('文件') || lower.includes('文档') || lower.includes('代码')
-                         || lower.includes('项目') || lower.includes('目录') || lower.includes('文件夹')
+    // Exclude if the user explicitly names another file/context (so we don't
+    // wrongly attach the open file to a project-wide or other-file request).
+    const fileContextWords = [
+      '文件', '文档', '代码', '项目', '目录', '文件夹',
+      'file', 'document', 'doc', 'code', 'project', 'directory', 'folder',
+    ]
+    const hasFileContext = fileContextWords.some((w) => lower.includes(w))
     if (hasEditVerb && !hasFileContext && openFiles.length > 0) {
       refs.push(openFiles[openFiles.length - 1])
     }
   }
 
-  if (lower.includes('这些文件') || lower.includes('打开的文件') || lower.includes('所有文件')) {
+  const allFilesKeywords = ['这些文件', '打开的文件', '所有文件', 'these files', 'open files', 'all files', 'all open files']
+  if (allFilesKeywords.some((kw) => lower.includes(kw))) {
     refs.push(...openFiles)
   }
 
@@ -666,11 +753,12 @@ export function registerAgentBridge() {
       modelOverride?: string
       attachments?: Array<{ type: 'image'; name: string; data: string; mediaType: string }>
       dataSources?: DataSourceSelection
+      createKind?: CreateKind
     }) => {
       const window = BrowserWindow.fromWebContents(event.sender)
       if (!window) return { success: false, error: 'No window' }
 
-      const { sessionId, userInput, config, mode, workspacePath, openFiles, tierOverride, modelOverride, attachments, dataSources } = payload
+      const { sessionId, userInput, config, mode, workspacePath, openFiles, tierOverride, modelOverride, attachments, dataSources, createKind } = payload
 
       // Load settings to build model router
       const { providers, defaultConfig } = await loadSettings()
@@ -695,7 +783,7 @@ export function registerAgentBridge() {
 
       const state = getOrCreateSessionState(
         sessionId, effectiveConfig, mode, workspacePath, openFiles,
-        modelRouter, tierOverride, modelOverride, dataSources,
+        modelRouter, tierOverride, modelOverride, dataSources, createKind,
       )
 
       if (state.running) {
@@ -708,9 +796,18 @@ export function registerAgentBridge() {
 
       // Build enhanced user input with file references
       const fileRefs = resolveFileReferences(userInput, workspacePath, openFiles || [])
-      const enhancedInput = fileRefs.length > 0
+      let enhancedInput = fileRefs.length > 0
         ? `${userInput}\n\n[Referenced files: ${fileRefs.join(', ')}]`
         : userInput
+
+      // Opt-in: prepend a fast-model "task brief" as context (original kept).
+      try {
+        if (getDb()?.getSetting('promptTaskBrief') === 'true') {
+          const weakCfg = resolveLLMConfig(providers, defaultConfig, 'weak') || effectiveConfig
+          const brief = await generateTaskBrief(userInput, openFiles || [], weakCfg)
+          if (brief) enhancedInput = `[任务摘要（自动生成，仅供参考）]\n${brief}\n[/任务摘要]\n\n${enhancedInput}`
+        }
+      } catch { /* never block submit */ }
 
       // Save session snapshots for undo-all (per-submit)
       const db = getDb()
@@ -760,6 +857,34 @@ export function registerAgentBridge() {
 
         for await (const agentEvent of generator) {
           if (!state.running) break
+          // Before an edit/create tool runs, capture the file's CURRENT state so
+          // undo-all can revert ANY file the agent touches — not just open ones —
+          // and delete files it creates. tool-use-start fires before the write.
+          if (agentEvent.type === 'tool-use-start') {
+            try {
+              const name = (agentEvent as any).name || ''
+              const EDIT_TOOLS = ['writeFile', 'writeFileBase64', 'editFile', 'editFileRange', 'appendFile', 'createDocument', 'wordFillTemplate', 'replaceWordParagraph', 'wordSet', 'wordBatchSet', 'wordAdd', 'wordRemove', 'wordRaw']
+              const inp = (agentEvent as any).input || {}
+              const rawPath = inp.path || inp.filePath || inp.outputPath
+              const db2 = getDb()
+              if (EDIT_TOOLS.includes(name) && typeof rawPath === 'string' && db2) {
+                const abs = isAbsolute(rawPath) ? rawPath : join(workspacePath, rawPath)
+                if (!db2.hasSessionSnapshot(sessionId, abs)) {
+                  const { readFileSync, existsSync } = require('fs')
+                  const { extname } = require('path')
+                  if (!existsSync(abs)) {
+                    db2.saveSessionSnapshot(sessionId, abs, '', true) // created this turn → delete on undo
+                  } else {
+                    const ext = extname(abs).toLowerCase()
+                    const isBinary = ['.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.pdf', '.zip', '.jar', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico'].includes(ext)
+                    const content = isBinary ? readFileSync(abs).toString('base64') : readFileSync(abs, 'utf-8')
+                    db2.saveSessionSnapshot(sessionId, abs, content, false)
+                  }
+                  state.canUndo = true
+                }
+              }
+            } catch { /* best-effort snapshot */ }
+          }
           // Track file modifications for undo-all
           if (agentEvent.type === 'tool-use-end') {
             const toolName = (agentEvent as any).name || ''
@@ -783,6 +908,45 @@ export function registerAgentBridge() {
         for (const msg of newMessages) {
           saveMessageToDb(sessionId, msg)
         }
+
+        // End-of-turn auto-capture: extract durable user instructions from THIS
+        // turn's messages into session memory. Heuristic only (no token cost).
+        // Scoped to newMessages so we don't re-capture prior turns.
+        // Skip when the turn was cancelled — `state.running` is set false by the
+        // agent:cancel handler, so a half-finished turn doesn't pollute memory.
+        if (state.running) try {
+          const turnForMemory = newMessages.map((m) => {
+            if (m.role === 'tool') {
+              return { role: 'tool', content: typeof m.result === 'string' ? m.result : JSON.stringify(m.result), toolName: m.toolName }
+            }
+            const content = typeof m.content === 'string'
+              ? m.content
+              : Array.isArray(m.content)
+                ? m.content.map((p: any) => (p.type === 'text' ? p.text : '')).join(' ')
+                : ''
+            return { role: m.role, content }
+          })
+          const points = extractKeyPoints(turnForMemory)
+            .filter((p) => p.startsWith('User instruction:'))
+            .slice(0, 3)
+          for (const p of points) appendSessionMemory(sessionId, p)
+
+          // Refresh the conversation summary used by the recall index. Cheap:
+          // the first user message is what the conversation is about.
+          const firstUser = allMessages.find((m) => m.role === 'user')
+          if (firstUser) {
+            const text = typeof firstUser.content === 'string'
+              ? firstUser.content
+              : Array.isArray(firstUser.content)
+                ? firstUser.content.map((p: any) => (p.type === 'text' ? p.text : '')).join(' ')
+                : ''
+            const summary = text.trim().slice(0, 200)
+            const sdb = getDb()
+            if (summary && sdb && typeof (sdb as any).setSessionSummary === 'function') {
+              (sdb as any).setSessionSummary(sessionId, summary)
+            }
+          }
+        } catch { /* memory capture is best-effort */ }
 
         return { success: true }
       } catch (err: any) {
@@ -905,6 +1069,24 @@ export function registerAgentBridge() {
     }
   })
 
+  // Conversation search (recall) — for the chat header search overlay.
+  ipcMain.handle(
+    'recall:search',
+    async (_event, payload: { query: string; sessionId?: string; workspacePath?: string; limit?: number }) => {
+      const db = getDb() as any
+      if (!db || typeof db.searchMessages !== 'function') return { hits: [], summaries: [] }
+      const hits = db.searchMessages(payload.query, {
+        sessionId: payload.sessionId,
+        workspacePath: payload.workspacePath,
+        limit: payload.limit ?? 30,
+      })
+      const summaries = payload.workspacePath && typeof db.getSessionSummaries === 'function'
+        ? db.getSessionSummaries(payload.workspacePath)
+        : []
+      return { hits, summaries }
+    },
+  )
+
   // Undo all modifications made during the last submit
   ipcMain.handle('agent:undoAll', async (_event, sessionId: string) => {
     const db = getDb()
@@ -920,12 +1102,18 @@ export function registerAgentBridge() {
       state.canUndo = false
       return { success: false, error: 'No snapshots found for this session' }
     }
-    const { writeFileSync } = require('fs')
+    const { writeFileSync, existsSync, unlinkSync } = require('fs')
     const { extname } = require('path')
     let restored = 0
     const errors: string[] = []
     for (const snap of snapshots) {
       try {
+        // Files the agent CREATED this turn had no prior state — delete them.
+        if (snap.was_created) {
+          if (existsSync(snap.file_path)) unlinkSync(snap.file_path)
+          restored++
+          continue
+        }
         const ext = extname(snap.file_path).toLowerCase()
         const isBinary = ['.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.pdf', '.zip', '.jar', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico'].includes(ext)
         if (isBinary) {

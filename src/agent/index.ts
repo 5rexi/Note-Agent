@@ -39,6 +39,14 @@ export { WebFetchTool } from './tools/impl/webFetch'
 export { WebSearchTool } from './tools/impl/webSearch'
 export { BrowseTool } from './tools/impl/browse'
 export { TodoWriteTool } from './tools/impl/todoWrite'
+export { UpdateMemoryTool } from './tools/impl/updateMemory'
+export { RecallHistoryTool } from './tools/impl/recallHistory'
+export {
+  StartBackgroundTaskTool,
+  ListBackgroundTasksTool,
+  ReadBackgroundTaskTool,
+  StopBackgroundTaskTool,
+} from './tools/impl/backgroundTask'
 export { AskUserQuestionTool } from './tools/impl/askUserQuestion'
 export { SubagentTool, setSubagentParentConfig } from './tools/impl/subagent'
 export { SkillTool } from './skills/skillTool'
@@ -53,9 +61,6 @@ export { SearchSemanticScholarTool } from './tools/impl/searchSemanticScholar'
 export { SearchPubMedTool } from './tools/impl/searchPubMed'
 export { ReplaceWordParagraphTool } from './tools/impl/replaceWordParagraph'
 export { PathJoinTool } from './tools/impl/pathJoin'
-export { AddWordParagraphTool } from './tools/impl/addWordParagraph'
-export { DeleteWordParagraphTool } from './tools/impl/deleteWordParagraph'
-export { ModifyWordFormatTool } from './tools/impl/modifyWordFormat'
 export { WordViewTool } from './tools/impl/wordView'
 export { WordGetTool } from './tools/impl/wordGet'
 export { WordSetTool } from './tools/impl/wordSet'

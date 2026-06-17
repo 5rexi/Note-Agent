@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useAtom, useAtomValue } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useT } from '../hooks/useT'
 import {
   tasksAtom,
@@ -10,10 +10,13 @@ import {
   editorStateAtom,
   themeAtom,
   streamingTaskIdsAtom,
+  creationKindAtom,
+  type CreateKind,
   type Task,
   type Workspace,
 } from '../atoms'
 import { toast } from 'sonner'
+import OutlinePanel from './OutlinePanel'
 import {
   Check,
   Plus,
@@ -74,6 +77,7 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
   const [taskFolders, setTaskFolders] = useAtom(taskFoldersAtom)
   const [workspaces, setWorkspaces] = useAtom(workspacesAtom)
   const [currentTaskId, setCurrentTaskId] = useAtom(currentTaskIdAtom)
+  const setCreationKind = useSetAtom(creationKindAtom)
   const [currentWorkspaceId, setCurrentWorkspaceId] = useAtom(currentWorkspaceIdAtom)
   const [editorState, setEditorState] = useAtom(editorStateAtom)
   const [theme, setTheme] = useAtom(themeAtom)
@@ -218,12 +222,15 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
     }
   }
 
-  const createCreationTask = async (typeLabel: string) => {
+  const createCreationTask = async (typeLabel: string, kind: CreateKind) => {
     if (!currentWorkspaceId) { toast.error(t('selectWorkspaceFirst')); return }
     const title = `${t('newTask')} ${typeLabel}`
     const newTask = await window.electronAPI.createTask(title, currentWorkspaceId)
     await window.electronAPI.updateTask(newTask.id, title, undefined, 'temp')
     setTasks((prev) => [...prev, { ...newTask, title, status: 'temp' }])
+    // Mark this task as a gated install context so ChatPanel submits with
+    // createKind, exposing the matching install tool to the agent.
+    setCreationKind((prev) => ({ ...prev, [newTask.id]: kind }))
     setCurrentTaskId(newTask.id)
     setExpandedGroups((prev) => ({ ...prev, temp: true }))
     toast.success(`${t('createdTask')}: ${title}`)
@@ -376,9 +383,10 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto py-2">
+      <div className="flex-1 min-h-0 flex flex-col">
         {isFileMode ? (
-          <div className="px-3 pb-2">
+          <>
+          <div className="flex-1 min-h-0 overflow-auto px-3 pt-2 pb-1">
             <div className="mb-1.5">
               <div className="flex items-center justify-between px-3 py-1">
                 <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--na-text-tertiary)' }}>{t('files')}</span>
@@ -413,8 +421,10 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
               )}
             </div>
           </div>
+          <OutlinePanel />
+          </>
         ) : (
-          <div className="px-3 pb-2">
+          <div className="flex-1 min-h-0 overflow-auto py-2 px-3 pb-2">
             {/* Status Groups — These are the "task folders" */}
             <NavSection title={t('tasks')}>
               {STATUS_ORDER.map((status) => {
@@ -674,8 +684,8 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
             <div className="mx-3 my-2" style={{ height: 1, background: 'var(--na-border-subtle)' }} />
 
             <NavSection title={t('web')}>
-              <DataSourceItem icon={Globe} label="API" onClick={() => { setManagerTab('api'); setManagerOpen(true) }} />
-              <DataSourceItem icon={Cable} label="MCP" onClick={() => { setManagerTab('mcp'); setManagerOpen(true) }} onAdd={() => createCreationTask('MCP')} />
+              <DataSourceItem icon={Globe} label="API" onClick={() => { setManagerTab('api'); setManagerOpen(true) }} onAdd={() => createCreationTask('API', 'api')} />
+              <DataSourceItem icon={Cable} label="MCP" onClick={() => { setManagerTab('mcp'); setManagerOpen(true) }} onAdd={() => createCreationTask('MCP', 'mcp')} />
             </NavSection>
 
             {/* Knowledge Base */}
@@ -737,7 +747,7 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
             </NavSection>
 
             <NavSection title={t('skills')}>
-              <SkillItem label={t('workspaceSkills')} onClick={() => { setManagerTab('skills'); setManagerOpen(true) }} onAdd={() => createCreationTask('Skill')} />
+              <SkillItem label={t('workspaceSkills')} onClick={() => { setManagerTab('skills'); setManagerOpen(true) }} onAdd={() => createCreationTask('Skill', 'skill')} />
               {/* Report Generation */}
               {reportEnabled && (
                 <div className="relative">
@@ -853,9 +863,9 @@ export default function Sidebar({ onToggle, onOpenSettings }: SidebarProps) {
         initialTab={managerTab}
         onCreateNew={(type) => {
           setManagerOpen(false)
-          if (type === 'skills') createCreationTask('Skill')
-          else if (type === 'mcp') createCreationTask('MCP')
-          else if (type === 'api') createCreationTask('API')
+          if (type === 'skills') createCreationTask('Skill', 'skill')
+          else if (type === 'mcp') createCreationTask('MCP', 'mcp')
+          else if (type === 'api') createCreationTask('API', 'api')
         }}
       />
 

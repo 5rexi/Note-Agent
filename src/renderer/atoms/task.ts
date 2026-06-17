@@ -17,6 +17,16 @@ export interface Task {
 export const tasksAtom = atom<Task[]>([])
 export const currentTaskIdAtom = atom<string | null>(null)
 
+export type CreateKind = 'skill' | 'mcp' | 'api'
+
+/**
+ * Tasks created via the Sidebar's +Skill/+MCP/+API buttons. Maps taskId → kind.
+ * While a task is in this map, ChatPanel submits with `createKind`, which is the
+ * ONLY way the gated install tools (installSkill/installMcp/installApi) become
+ * available to the agent. Cleared once the install is done (or the task is left).
+ */
+export const creationKindAtom = atom<Record<string, CreateKind>>({})
+
 export const currentTaskAtom = atom((get) => {
   const id = get(currentTaskIdAtom)
   return get(tasksAtom).find((t) => t.id === id) ?? null

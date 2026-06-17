@@ -10,6 +10,7 @@
  */
 import type { LLMConfig, ContentPart } from '../types'
 import { withRetry } from '../retry'
+import { CACHE_BREAKPOINT } from '../prompt/minimal'
 import { supportsVision, toOpenAIContent } from './format-conversion'
 import {
   type LLMClient,
@@ -60,7 +61,7 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
   const url = `${baseUrl}/chat/completions`
 
   return {
-    async *stream(messages, tools, signal) {
+    async *stream(messages, tools, signal, options) {
       const apiMessages = messages.map((m) => {
         if (m.role === 'assistant' && m.toolCalls) {
           const msg: any = {
@@ -107,6 +108,11 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
           }
           return { role: 'user', content: toOpenAIContent(parts as ContentPart[]) }
         }
+        if (m.role === 'system') {
+          // OpenAI-compatible providers auto-cache stable prefixes; the cache
+          // breakpoint marker is Anthropic-only, so strip it here.
+          return { role: 'system', content: String(m.content).split(CACHE_BREAKPOINT).join('\n\n') }
+        }
         return { role: m.role, content: m.content }
       })
 
@@ -124,7 +130,10 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
           type: 'function',
           function: { name: t.name, description: t.description, parameters: t.parameters },
         }))
-        body.tool_choice = 'auto'
+        // 'required' forces the model to emit at least one tool call (empty-round
+        // recovery). Supported by OpenAI and most compatible providers (GLM, Kimi,
+        // MiniMax, DeepSeek); harmlessly ignored by any that don't.
+        body.tool_choice = options?.toolChoice === 'required' ? 'required' : 'auto'
         // DeepSeek does not support parallel tool calls — disable so the model
         // emits one tool call at a time, matching its training.
         if (baseUrl.includes('deepseek.com')) {
@@ -160,6 +169,13 @@ export function createOpenAIClient(config: LLMConfig): LLMClient {
       const isGLM = baseUrl.includes('bigmodel') || baseUrl.includes('z.ai')
       if (isGLM && (config.model?.startsWith('glm-4.') || config.model?.startsWith('glm-5'))) {
         body.thinking = { type: 'enabled', clear_thinking: false }
+      }
+
+      // Thinking/reasoning modes reject a forced tool_choice ("Thinking mode does
+      // not support this tool_choice"). Degrade the empty-round-recovery force to
+      // 'auto' — reasoning models follow the prompt well enough without it.
+      if (body.thinking && body.tool_choice === 'required') {
+        body.tool_choice = 'auto'
       }
 
       const isKimiCode = baseUrl.includes('api.kimi.com')

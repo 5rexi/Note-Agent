@@ -1,13 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell, webContents, Menu, globalShortcut } from 'electron'
 import { join, isAbsolute, dirname, basename, sep, normalize } from 'path'
 import { pathToFileURL } from 'url'
-import { writeFileSync, existsSync, mkdirSync, watch, appendFileSync } from 'fs'
+import { writeFileSync, existsSync, mkdirSync, watch, appendFileSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { Database } from './db'
 import { registerFsHandlers } from './fs-utils'
 import { registerAgentBridge } from './agent-bridge'
 import { registerReportHandlers } from './report'
-import { registerLatexHandlers, registerOfficeHandlers } from './latex-office'
+import { registerLatexHandlers } from './latex-office'
+import { registerSyncTexHandlers } from './synctex'
 import { registerLatexSetupHandlers } from './latex-setup'
 import { registerWordHandlers } from './word-office'
 import { registerPandocSetupHandlers } from './pandoc-setup'
@@ -80,6 +81,7 @@ async function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow!.show()
     mainWindow!.focus()
+    closeSplash()
   })
   setMainWindow(mainWindow)
 
@@ -128,23 +130,119 @@ async function createWindow() {
     return { action: 'deny' }
   })
 
+  // Show the window once the renderer paints. Fallback: if first paint never
+  // fires (a stuck renderer), show it anyway after a timeout so the app is never
+  // permanently invisible — and devtools stays reachable to diagnose.
+  const showFallback = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      writeCrashLog('WARN', 'ready-to-show did not fire within 15s; showing window anyway')
+      mainWindow.show(); mainWindow.focus(); closeSplash()
+    }
+  }, 15000)
+
   mainWindow.on('closed', () => {
+    clearTimeout(showFallback)
     mainWindow = null
   })
 }
 
+// ── Startup splash (shown immediately while the main window loads) ──
 
+const ICON_PATH = join(__dirname, '..', 'assets', 'icon.png')
+let splashWindow: BrowserWindow | null = null
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 380, height: 230,
+    frame: false, resizable: false, movable: false, center: true,
+    show: false, alwaysOnTop: true, skipTaskbar: true,
+    backgroundColor: '#141414',
+    icon: ICON_PATH,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  splashWindow.setMenu(null)
+
+  let iconB64 = ''
+  try { iconB64 = readFileSync(ICON_PATH).toString('base64') } catch { /* no icon */ }
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+    *{margin:0;padding:0;box-sizing:border-box}html,body{height:100%}
+    body{display:flex;flex-direction:column;align-items:center;justify-content:center;
+      font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+      background:#141414;color:#fafafa;user-select:none;-webkit-user-select:none}
+    img{width:64px;height:64px;border-radius:14px;margin-bottom:14px}
+    .name{font-size:18px;font-weight:600;letter-spacing:.3px}
+    .status{margin-top:8px;font-size:12px;color:#9a9a9a;min-height:16px;padding:0 24px;text-align:center}
+    .bar{margin-top:18px;width:200px;height:3px;border-radius:3px;background:#2a2a2a;overflow:hidden}
+    .bar>i{display:block;height:100%;width:40%;border-radius:3px;background:#818CF8;animation:slide 1.1s ease-in-out infinite}
+    @keyframes slide{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+  </style></head><body>
+    ${iconB64 ? `<img src="data:image/png;base64,${iconB64}"/>` : ''}
+    <div class="name">Note Agent</div>
+    <div class="status" id="s">正在启动…</div>
+    <div class="bar"><i></i></div>
+    <script>window.__status=function(t){var e=document.getElementById('s');if(e)e.textContent=t}</script>
+  </body></html>`
+  splashWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  splashWindow.once('ready-to-show', () => splashWindow?.show())
+  splashWindow.on('closed', () => { splashWindow = null })
+}
+
+function setStartupStatus(text: string) {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  splashWindow.webContents
+    .executeJavaScript(`window.__status && window.__status(${JSON.stringify(text)})`)
+    .catch(() => {})
+}
+
+function closeSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) { try { splashWindow.close() } catch { /* ignore */ } }
+  splashWindow = null
+}
+
+// Single-instance lock: a second launch focuses the existing window instead of
+// spawning a rival process that fights over the same disk/GPU cache dir (the
+// "Unable to move the cache: Access Denied" / "Gpu Cache Creation failed"
+// errors on Windows come from that contention).
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
+// Silence the (benign) GPU shader disk-cache creation error on locked-down
+// Windows installs; shaders just aren't cached to disk.
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 
 app.whenReady().then(async () => {
+  createSplashWindow()
+  setStartupStatus('正在初始化数据库…')
   db = new Database()
   db.init()
   ;(global as any).__db = db
 
+  // Retention: strip base64 image data from chats older than 30 days. Keeps all
+  // conversation TEXT recallable while removing the only payload that grows the DB.
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60
+    const stripped = db.stripOldImages(cutoff)
+    if (stripped > 0) console.log(`[retention] stripped images from ${stripped} old message(s)`)
+  } catch (err) {
+    console.warn('[retention] stripOldImages failed:', err)
+  }
+
   // Register IPC handlers
+  setStartupStatus('正在注册服务…')
   registerDbHandlers()
   registerFsHandlers()
   registerAgentBridge()
@@ -152,7 +250,7 @@ app.whenReady().then(async () => {
   registerReportHandlers(db)
   registerFileWatcher()
   registerLatexHandlers()
-  registerOfficeHandlers()
+  registerSyncTexHandlers()
   registerWordHandlers()
   // registerWordSetupHandlers() removed — LibreOffice no longer required
   registerLatexSetupHandlers()
@@ -184,18 +282,19 @@ app.whenReady().then(async () => {
 
   taskManager.loadPersisted()
 
-  // Auto-detect / install uv on startup
-  try {
-    const { ensureUvInstalled } = await import('./python-env')
-    const uvPath = await ensureUvInstalled()
-    if (!uvPath) {
-      console.warn('[App] uv not found and could not be auto-installed')
-    } else {
-      console.log('[App] uv ready:', uvPath)
+  setStartupStatus('正在准备界面…')
+
+  // Auto-detect / install uv — fire-and-forget so a slow download never blocks
+  // (or hangs) app startup. The first Python task waits on it if still running.
+  ;(async () => {
+    try {
+      const { ensureUvInstalled } = await import('./python-env')
+      const uvPath = await ensureUvInstalled()
+      console.log(uvPath ? `[App] uv ready: ${uvPath}` : '[App] uv not found / could not auto-install')
+    } catch (err) {
+      console.warn('[App] uv check failed:', err)
     }
-  } catch (err) {
-    console.warn('[App] uv check failed:', err)
-  }
+  })()
 
   createWindow()
 })
@@ -262,6 +361,10 @@ app.on('before-quit', (e) => {
   e.preventDefault()
   Promise.resolve()
     .then(async () => {
+      try {
+        const { backgroundTasks } = await import('../agent/tools/impl/background-task-manager')
+        backgroundTasks.killAll()
+      } catch {}
       try { await browserHost.shutdown() } catch {}
       try { db.close() } catch {}
     })

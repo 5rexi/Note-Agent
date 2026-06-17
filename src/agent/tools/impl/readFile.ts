@@ -77,6 +77,27 @@ export const ReadFileTool: Tool<Input, string> = {
       }
     }
 
+    // Extract spreadsheet content (xlsx/xls) as CSV text, one block per sheet.
+    if (ext === 'xlsx' || ext === 'xls') {
+      try {
+        const XLSX = await import('xlsx')
+        const wb = XLSX.read(readFileSync(filePath), { type: 'buffer' })
+        const parts: string[] = []
+        for (const name of wb.SheetNames) {
+          const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name])
+          parts.push(`## Sheet: ${name}\n${csv}`.trim())
+        }
+        let text = parts.join('\n\n')
+        if (text.length > MAX_DOCX_CHARS) {
+          text = text.slice(0, MAX_DOCX_CHARS) + DOCX_TRUNCATION_NOTICE.replace('{total}', String(text.length))
+        }
+        fileStateCache.record(filePath)
+        return { data: text || '(empty spreadsheet)' }
+      } catch (err: any) {
+        return { data: '', error: `Failed to read spreadsheet: ${err.message}` }
+      }
+    }
+
     // Skip binary files (simple heuristic)
     const content = readFileSync(filePath, 'utf-8')
     if (content.includes('\x00')) {

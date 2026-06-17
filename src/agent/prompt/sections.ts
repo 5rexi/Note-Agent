@@ -9,6 +9,7 @@
  */
 import { join } from 'path'
 import type { SystemPromptSection, PromptContext, SectionGenerator } from './types'
+import { activeFileToolHint } from './minimal'
 
 // ── 静态区（Static / Cacheable）──
 
@@ -56,7 +57,14 @@ export function taskRulesSection(): SystemPromptSection {
 - Do NOT add error handling for impossible scenarios.
 - Do NOT create helper functions for one-off operations.
 - Before claiming a task is complete, verify that it actually works.
-- NEVER write placeholder, test, or temporary files (e.g., names containing "test", "temp", "tmp", "placeholder", "draft", "nul"). Write the FINAL content directly.`,
+- NEVER write placeholder/draft versions of the user's DELIVERABLE (e.g. output files named "test", "temp", "draft"). Write the FINAL deliverable directly.
+
+### Scratch & Generation Scripts (CRITICAL — NON-NEGOTIABLE)
+Any helper script, intermediate file, or scratch artifact you create to ACCOMPLISH the task — generation scripts (\`.js\`/\`.py\`/\`.sh\`), unpacked archives, conversion intermediates, downloaded inputs, logs — MUST live inside the workspace's \`.note_agent/temp/\` directory. NEVER write them to the workspace root or anywhere else; they pollute the user's project.
+- Create them with RELATIVE paths only, e.g. \`writeFile(path=".note_agent/temp/gen.py", ...)\` then \`cd .note_agent/temp && python gen.py\`.
+- Use the **pathJoin** tool to build paths; NEVER string-concatenate (which yields broken paths like \`.note_agenttemp\`).
+- ONLY the final deliverable the user asked for goes to its proper destination (workspace root, an output/ folder, or the path the user specified). Everything else stays in \`.note_agent/temp/\`.
+- This rule overrides any "install/run here" instructions in a skill's README or external docs.`,
     priority: 93,
     cacheable: true,
   }
@@ -91,8 +99,8 @@ You have access to the following tools:
 - **grepSearch** — Search for text patterns across files using regex.
 - **writeFile** — Create or overwrite a file with new content.
 - **appendFile** — Append content to the END of an existing file. Use this to build long documents section by section.
-- **editFile** — Edit an existing file by replacing exact text.
-- **editFileRange** — Edit a file by replacing text at a specific line:column range. Use this when the user has quoted a precise code selection with line/column numbers.
+- **editFile** — Edit an existing file by replacing text. Parameters are \`search\` and \`replace\` (NOT oldString/newString). Matching is line-ending agnostic (works on CRLF Windows files). PREFER this for edits: copy a unique \`search\` snippet VERBATIM from readFile output (exact characters + indentation) rather than computing line/column numbers.
+- **editFileRange** — Edit at a specific line:column range (1-based, endColumn EXCLUSIVE). Manual column math is error-prone — only use when editFile can't, and ALWAYS pass \`expectedText\` (the exact current text in the range) so a miscalculated range is rejected instead of corrupting the file.
 - **executeCommand** — Run a shell command in the workspace directory.
 - **webFetch** — Fetch and extract text from a webpage.
 - **webSearch** — Search the web using DuckDuckGo.
@@ -125,7 +133,7 @@ You have access to the following tools:
 ## Tool Usage Rules
 - Use the EXACT tool names provided.
 - All file paths are relative to the workspace root.
-- For file edits, use editFile with exact search/replace text. Include enough context for an exact match.
+- For file edits, use **editFile** with \`search\`/\`replace\`. Copy the \`search\` text VERBATIM from the readFile output — do NOT retype or re-indent it. Matching ignores CRLF vs LF, so Windows files work. Include enough surrounding context that \`search\` is unique. Avoid editFileRange/column math unless necessary (and pass \`expectedText\` when you do).
 - For file creation, use writeFile. It auto-creates parent directories.
 - **CRITICAL — writeFile content rule:** The content parameter MUST contain the COMPLETE file content in a single call. You CANNOT write part 1 now and append part 2 later. writeFile always overwrites the whole file. Compose the full content in your reasoning first, then make ONE writeFile call with the entire string. Never call writeFile with an empty content parameter.
 - **If you need to append to an existing file:** Use **appendFile**. Do NOT use readFile + writeFile for appending — that wastes tokens by re-transmitting existing content.
@@ -327,12 +335,15 @@ export function openFilesSection(ctx: PromptContext): SystemPromptSection | null
     return isActive ? `${f} (active / currently focused)` : f
   })
 
+  const active = ctx.openFiles[ctx.openFiles.length - 1]
   return {
     name: 'OPEN_FILES',
     content: `## Currently Open Files
 ${files.join('\n')}
 
-The last file in the list is the one currently visible in the editor. When the user refers to "this file", "current file", or makes an edit request without specifying a file name, they mean the active file.`,
+The last file in the list is the one currently visible in the editor. When the user refers to "this file", "current file", or makes an edit request without specifying a file name, they mean the active file.
+
+**Tools for the active file** → ${activeFileToolHint(active)}`,
     priority: 72,
     cacheable: false,
   }

@@ -5,20 +5,25 @@ import { homedir } from 'os'
 import type { Tool, ToolContext } from '../Tool'
 import type { ToolResult } from '../../types'
 import { isDangerousCommand } from '../../utils/fs-guard'
-import { buildWindowsShellCommand, getShellEnvFromDb } from '../../../main/shell-env'
+import { buildShellCommand, getShellEnvFromDb, resolveDefaultShell, isBashLikeShell } from '../../../main/shell-env'
 import { rewritePythonCommand } from '../../../main/python-env'
 
 // Resolve app's node_modules path so bundled packages (pptxgenjs, docx) are available
 // to scripts executed in user workspaces.
 import { existsSync } from 'fs'
 const APP_NODE_MODULES = (() => {
-  // Candidate paths where node_modules might live
-  const candidates = [
-    join(process.cwd(), 'node_modules'),
+  // Candidate paths where node_modules might live. In a packaged app the script
+  // packages are inside app.asar, which a spawned `node` child process CANNOT
+  // require from — they must be the UNPACKED copies (app.asar.unpacked/...).
+  // So prefer the .unpacked path (electron's fs makes existsSync true for both).
+  const unpack = (p: string) => p.replace(/app\.asar([\\/])/g, 'app.asar.unpacked$1')
+  const bases = [
     join(__dirname, '..', 'node_modules'),
     join(__dirname, '..', '..', 'node_modules'),
+    join(process.cwd(), 'node_modules'),
   ]
-  // Pick the first one that actually contains pptxgenjs
+  const candidates = [...bases.map(unpack), ...bases]
+  // Pick the first one that actually contains pptxgenjs.
   for (const c of candidates) {
     if (existsSync(join(c, 'pptxgenjs', 'package.json'))) return c
   }
@@ -34,13 +39,17 @@ type Input = z.infer<typeof inputSchema>
 
 export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; exitCode: number }> = {
   name: 'executeCommand',
-  description: (() => {
-    const isWin = process.platform === 'win32'
-    const shellInfo = isWin
-      ? 'Current platform: Windows. Use cmd/PowerShell syntax. mkdir works without -p. Use forward slashes (/) or escaped backslashes (\\\\) in paths. Avoid bash-specific syntax.'
-      : 'Current platform: Unix-like. Standard bash syntax applies.'
-    return 'Execute a shell command in the workspace directory. ' + shellInfo + ' NOTE: npm/bun/yarn/pnpm install commands are automatically routed to the .note_agent/ subdirectory to avoid polluting the workspace root with node_modules.'
-  })(),
+  // Getter so the guidance tracks the user's CURRENT terminal choice (Settings →
+  // can change at runtime). The configured shell decides cmd vs unix syntax.
+  get description() {
+    let cfg = getShellEnvFromDb() || resolveDefaultShell()
+    if ((cfg.type as string) === 'native') cfg = { type: 'cmd' }
+    const bashLike = isBashLikeShell(cfg.type)
+    const shellInfo = bashLike
+      ? `The configured terminal is **${cfg.type}** — a Unix/bash-like shell. Use UNIX commands (\`cp\`, \`mv\`, \`rm\`, \`ls\`, \`mkdir -p\`) and forward-slash paths. Do NOT use Windows cmd built-ins (\`copy\`/\`move\`/\`del\`) — they FAIL here.`
+      : `The configured terminal is **${cfg.type}** (Windows ${cfg.type === 'powershell' ? 'PowerShell' : 'cmd'}). Use Windows commands (\`copy\`, \`move\`, \`del\`, \`mkdir\` without -p). Do NOT use Unix-only commands (\`cp\`, \`rm\`, \`ls\`) — prefer ${cfg.type === 'powershell' ? 'PowerShell cmdlets (Copy-Item, Remove-Item)' : 'cmd built-ins'}.`
+    return 'Execute a shell command in the workspace directory. ' + shellInfo + ' Tip: scripts can write output DIRECTLY to the final path (e.g. relative `../../output.pptx`) to avoid a copy step. NOTE: npm/bun/yarn/pnpm install commands are automatically routed to the .note_agent/ subdirectory to avoid polluting the workspace root with node_modules.'
+  },
   inputSchema,
   aliases: ['bash'],
 
@@ -72,47 +81,38 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
     const timeoutSec = Math.min(input.timeout || 30, MAX_TIMEOUT_SECONDS)
 
     return new Promise((resolve) => {
-      let execCommand = input.command
-      const execOptions: any = {
-        cwd: ctx.workspacePath,
-        env: {
-          ...process.env,
-          HOME: process.env.HOME || process.env.USERPROFILE || homedir(),
-          NODE_PATH: APP_NODE_MODULES + (process.env.NODE_PATH ? delimiter + process.env.NODE_PATH : ''),
-        },
+      const env = {
+        ...process.env,
+        HOME: process.env.HOME || process.env.USERPROFILE || homedir(),
+        NODE_PATH: APP_NODE_MODULES + (process.env.NODE_PATH ? delimiter + process.env.NODE_PATH : ''),
       }
 
       // Prevent polluting the workspace root with node_modules.
       const installPattern = /^\s*(npm\s+(install|i)\b|bun\s+install\b|yarn\s+(add|install)\b|pnpm\s+(add|install)\b)/
-      if (installPattern.test(input.command)) {
-        execOptions.cwd = join(ctx.workspacePath, '.note_agent')
-      }
+      const cwd = installPattern.test(input.command)
+        ? join(ctx.workspacePath, '.note_agent')
+        : ctx.workspacePath
 
-      // On Windows, route through user-selected shell env
-      if (process.platform === 'win32') {
-        const shellEnv = getShellEnvFromDb()
-        if (shellEnv) {
-          const built = buildWindowsShellCommand(input.command, ctx.workspacePath, shellEnv)
-          execCommand = built.command
-          execOptions.cwd = built.options.cwd
-          execOptions.shell = built.options.shell
-        } else {
-          execOptions.shell = true
-        }
-      }
+      // Route python commands to the workspace venv if available.
+      const rawCommand = rewritePythonCommand(input.command, ctx.workspacePath)
 
-      // Route python commands to workspace venv if available
-      execCommand = rewritePythonCommand(execCommand, ctx.workspacePath)
+      // Resolve the user-configured shell (or platform default) into an explicit
+      // spawn invocation. Works on every OS — the old code only set a shell on
+      // Windows, so Unix commands with args/pipes failed to run at all.
+      const resolved = buildShellCommand(rawCommand, cwd, getShellEnvFromDb())
 
-      // Replace Windows-style redirects
-      execCommand = execCommand.replace(/>\s*nul\b/g, '> /dev/null').replace(/2>\s*nul\b/g, '2> /dev/null')
+      // Only rewrite Windows-style `nul` redirects when running under bash.
+      const args = resolved.bashLike
+        ? resolved.args.map((a) => a.replace(/>\s*nul\b/g, '> /dev/null').replace(/2>\s*nul\b/g, '2> /dev/null'))
+        : resolved.args
 
       let stdout = ''
       let stderr = ''
       let killed = false
 
-      const child = spawn(execCommand, [], {
-        ...execOptions,
+      const child = spawn(resolved.file, args, {
+        cwd: resolved.cwd,
+        env,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
@@ -122,6 +122,18 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
         // Force kill after 5s if still running
         setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 5000)
       }, timeoutSec * 1000)
+
+      // Kill the process if the user cancels the turn.
+      const onAbort = () => {
+        killed = true
+        try { child.kill('SIGTERM') } catch {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+      }
+      if (ctx.signal) {
+        if (ctx.signal.aborted) onAbort()
+        else ctx.signal.addEventListener('abort', onAbort, { once: true })
+      }
+      const cleanupAbort = () => ctx.signal?.removeEventListener('abort', onAbort)
 
       child.stdout?.on('data', (chunk: Buffer) => {
         if (stdout.length + chunk.length > MAX_OUTPUT_SIZE) {
@@ -145,6 +157,7 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
 
       child.on('error', (err: any) => {
         clearTimeout(timeoutId)
+        cleanupAbort()
         let errorMsg = `Command failed: ${err.message || 'Unknown error'}`
         if (err.code === 'ENOENT') {
           errorMsg = `Command not found or not installed: "${input.command.split(' ')[0]}"`
@@ -157,6 +170,7 @@ export const ExecuteCommandTool: Tool<Input, { stdout: string; stderr: string; e
 
       child.on('close', (code: number | null) => {
         clearTimeout(timeoutId)
+        cleanupAbort()
         const exitCode = code ?? (killed ? 124 : 1)
 
         if (exitCode === 0 && !killed) {

@@ -8,13 +8,13 @@
  * - Agent tools always use .note_agent/venv
  */
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync, writeFileSync, readdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, rmSync } from 'fs'
 import { join, dirname, basename } from 'path'
 import { homedir } from 'os'
 import https from 'https'
 import { createWriteStream } from 'fs'
 
-const UV_VERSION = '0.6.25'
+const UV_VERSION = '0.11.21'
 const UV_DIR = join(homedir(), '.note_agent', 'uv')
 
 // ── uv ──
@@ -34,14 +34,35 @@ function getUvPlatformBinary(): string {
 
 function getUvDownloadUrl(): string {
   const base = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}`
-  const binary = getUvPlatformBinary()
+  // The release ARCHIVE is named by target triple WITHOUT the .exe suffix
+  // (e.g. uv-x86_64-pc-windows-msvc.zip, NOT uv-...-msvc.exe.zip → 404).
+  const binary = getUvPlatformBinary().replace(/\.exe$/, '')
   const ext = process.platform === 'win32' ? 'zip' : 'tar.gz'
   return `${base}/${binary}.${ext}`
 }
 
+/** Canonical local uv path after install. */
 function getUvPath(): string {
-  const binary = getUvPlatformBinary()
-  return join(UV_DIR, process.platform === 'win32' ? binary : 'uv')
+  return join(UV_DIR, process.platform === 'win32' ? 'uv.exe' : 'uv')
+}
+
+/** Recursively find the uv binary anywhere under a dir (archives vary: the
+ *  Windows zip has uv.exe at root, the tar.gz nests it in uv-<triple>/uv). */
+function findUvBinary(dir: string): string | null {
+  const target = process.platform === 'win32' ? 'uv.exe' : 'uv'
+  try {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry)
+      const st = statSync(full)
+      if (st.isDirectory()) {
+        const found = findUvBinary(full)
+        if (found) return found
+      } else if (entry === target) {
+        return full
+      }
+    }
+  } catch { /* ignore */ }
+  return null
 }
 
 export function isUvInstalled(): boolean {
@@ -61,41 +82,82 @@ export async function ensureUvInstalled(): Promise<string | null> {
   const localPath = getUvPath()
   if (existsSync(localPath)) return localPath
 
-  // Download uv
+  // Install with self-repair: a prior bad download (wrong URL / partial file)
+  // can leave a corrupt or empty uv dir. If download/extract/verify fails, wipe
+  // the whole dir and retry once from a clean slate.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await downloadAndExtractUv()
+      if (result && existsSync(result)) return result
+      throw new Error('uv binary not found after extraction')
+    } catch (err) {
+      try { rmSync(UV_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
+      if (attempt === 1) { console.warn('[uv] install failed after retry:', err); return null }
+    }
+  }
+  return null
+}
+
+async function downloadAndExtractUv(): Promise<string | null> {
+  const localPath = getUvPath()
   const url = getUvDownloadUrl()
   mkdirSync(UV_DIR, { recursive: true })
   const archivePath = join(UV_DIR, 'download.' + (process.platform === 'win32' ? 'zip' : 'tar.gz'))
 
   await new Promise<void>((resolve, reject) => {
-    const file = createWriteStream(archivePath)
-    https.get(url, { headers: { 'User-Agent': 'note-agent' } }, (res) => {
-      if (res.statusCode === 302 || res.statusCode === 301) {
-        const location = res.headers.location
-        if (!location) { reject(new Error('Redirect without location')); return }
-        https.get(location, { headers: { 'User-Agent': 'note-agent' } }, (res2) => {
-          res2.pipe(file)
-          file.on('finish', () => { file.close(); resolve() })
-        }).on('error', reject)
-        return
-      }
-      res.pipe(file)
-      file.on('finish', () => { file.close(); resolve() })
-    }).on('error', reject)
+    // GitHub release downloads chain through several redirects (github.com →
+    // objects.githubusercontent.com → CDN). Follow them, and ONLY write the file
+    // on a 200 — never pipe a redirect/error body, which corrupts the archive
+    // ("Invalid or unsupported zip format. No END header found").
+    const get = (u: string, hops: number) => {
+      if (hops > 6) { reject(new Error('Too many redirects')); return }
+      https.get(u, { headers: { 'User-Agent': 'note-agent' } }, (res) => {
+        const sc = res.statusCode || 0
+        if (sc >= 300 && sc < 400 && res.headers.location) {
+          res.resume() // drain so the socket frees
+          get(new URL(res.headers.location, u).toString(), hops + 1)
+          return
+        }
+        if (sc !== 200) { res.resume(); reject(new Error(`Download failed: HTTP ${sc}`)); return }
+        const file = createWriteStream(archivePath)
+        res.pipe(file)
+        file.on('finish', () => file.close(() => resolve()))
+        file.on('error', reject)
+      }).on('error', reject)
+    }
+    get(url, 0)
   })
 
   // Extract
   if (process.platform === 'win32') {
-    const AdmZip = require('adm-zip')
-    const zip = new AdmZip(archivePath)
-    zip.extractAllTo(UV_DIR, true)
+    try {
+      const AdmZip = require('adm-zip')
+      const zip = new AdmZip(archivePath)
+      zip.extractAllTo(UV_DIR, true)
+    } catch (e) {
+      // Fall back to PowerShell if adm-zip can't read the archive.
+      execSync(
+        `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${UV_DIR}' -Force"`,
+        { timeout: 30000 },
+      )
+    }
   } else {
     execSync(`tar -xzf "${archivePath}" -C "${UV_DIR}"`, { timeout: 30000 })
   }
-
-  // Cleanup
   try { require('fs').unlinkSync(archivePath) } catch {}
 
-  return existsSync(localPath) ? localPath : null
+  // Locate the extracted binary (path varies by archive) and move it to the
+  // canonical location so getUvPath() / isUvInstalled() find it reliably.
+  const fs = require('fs')
+  const found = findUvBinary(UV_DIR)
+  if (found && found !== localPath) {
+    try { fs.copyFileSync(found, localPath) } catch {}
+  }
+  if (existsSync(localPath)) {
+    if (process.platform !== 'win32') { try { fs.chmodSync(localPath, 0o755) } catch {} }
+    return localPath
+  }
+  return found || null
 }
 
 // ── Agent-only venv (.note_agent/venv) ──
@@ -208,13 +270,16 @@ function findCondaInKnownPaths(): string | null {
 }
 
 export function getCondaPath(): string | null {
-  // 1. Try PATH directly
+  // 1. Try PATH directly. `which`/`command` don't exist on Windows cmd.exe — use
+  // `where conda` there (otherwise it prints "'which' 不是内部或外部命令").
   try {
-    const result = execSync('which conda || command -v conda', {
+    const cmd = process.platform === 'win32' ? 'where conda' : 'which conda || command -v conda'
+    const result = execSync(cmd, {
       encoding: 'utf-8',
       timeout: 3000,
       env: process.env as { [key: string]: string },
       shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+      stdio: 'pipe',
     }).trim().split('\n')[0].trim()
     if (result && existsSync(result)) return result
   } catch {}

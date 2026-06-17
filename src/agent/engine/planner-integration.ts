@@ -24,6 +24,7 @@ import {
   type TaskPlan,
 } from '../planner/TaskPlanner'
 import { loadSkills, formatSkillsContext } from '../skills/loader'
+import { buildMemoryContext, formatMemoryContext } from '../memory'
 import type { MinimalPromptContext } from '../prompt/minimal'
 import { logger } from '../logger'
 import {
@@ -147,6 +148,11 @@ This task includes a research phase. You should:
     builtInSkillsLength: builtInSkills?.length || 0,
   })
 
+  // Memory snapshot — taken once per submit. Goes into the cached stable prompt;
+  // any mid-submit updateMemory writes persist to DB but won't change this text
+  // until the next submit, keeping the cache prefix byte-identical across rounds.
+  const memory = formatMemoryContext(buildMemoryContext(workspacePath, sid))
+
   const minimalPromptCtx: MinimalPromptContext = {
     mode,
     workspacePath,
@@ -157,6 +163,7 @@ This task includes a research phase. You should:
     todoStatus,
     skillsContext,
     builtInSkills,
+    memory: memory || undefined,
   }
 
   return { taskPlan, persistedPlan, minimalPromptCtx }

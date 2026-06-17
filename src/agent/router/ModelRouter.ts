@@ -259,6 +259,26 @@ export class ModelRouter {
 // ── 预设配置工厂 ──
 
 /**
+ * Routing keyword sets. `taskContains` does a lowercase substring match, so
+ * each English term is paired with its Chinese equivalents — otherwise CJK
+ * input (the primary audience for this doc tool) would never trigger routing.
+ */
+const SIMPLE_KEYWORDS = [
+  'hello', 'hi', 'explain', 'what is', 'how to', 'summary',
+  '你好', '解释', '什么是', '怎么', '如何', '总结', '概述',
+] as const
+
+const COMPLEX_KEYWORDS = [
+  'refactor', 'architecture', 'design', 'complex', 'debug',
+  '重构', '架构', '设计', '复杂', '调试', '排查',
+] as const
+
+const CODEGEN_KEYWORDS = [
+  'write', 'implement', 'create', 'generate code',
+  '写', '编写', '撰写', '实现', '创建', '生成', '起草', '草拟',
+] as const
+
+/**
  * 创建双模型配置（轻量+强力）
  */
 export function createDualModelConfig(
@@ -313,13 +333,13 @@ export function createDualModelConfig(
       },
       {
         name: 'Complex task → Strong',
-        condition: { type: 'taskContains', keywords: ['refactor', 'architecture', 'design', 'complex', 'debug'] },
+        condition: { type: 'taskContains', keywords: [...COMPLEX_KEYWORDS] },
         targetModel: strongModel.name,
         priority: 80,
       },
       {
         name: 'Code generation → Strong',
-        condition: { type: 'taskContains', keywords: ['write', 'implement', 'create', 'generate code'] },
+        condition: { type: 'taskContains', keywords: [...CODEGEN_KEYWORDS] },
         targetModel: strongModel.name,
         priority: 70,
       },
@@ -389,7 +409,7 @@ export function createTriModelConfig(
     rules: [
       {
         name: 'Simple Q&A → Weak',
-        condition: { type: 'taskContains', keywords: ['hello', 'hi', 'explain', 'what is', 'how to', 'summary'] },
+        condition: { type: 'taskContains', keywords: [...SIMPLE_KEYWORDS] },
         targetModel: weakModel.name,
         priority: 50,
       },
@@ -413,13 +433,13 @@ export function createTriModelConfig(
       },
       {
         name: 'Complex task → Strong',
-        condition: { type: 'taskContains', keywords: ['refactor', 'architecture', 'design', 'complex', 'debug'] },
+        condition: { type: 'taskContains', keywords: [...COMPLEX_KEYWORDS] },
         targetModel: strongModel.name,
         priority: 80,
       },
       {
         name: 'Code generation → Medium+',
-        condition: { type: 'taskContains', keywords: ['write', 'implement', 'create', 'generate code'] },
+        condition: { type: 'taskContains', keywords: [...CODEGEN_KEYWORDS] },
         targetModel: mediumModel.name,
         priority: 70,
       },

@@ -38,6 +38,13 @@ export interface MemoryRecord {
   created_at: number
 }
 
+export interface KvMemoryRecord {
+  scope: string
+  key: string
+  value: string
+  updated_at: number
+}
+
 // Lazy-load better-sqlite3 to support CLI environments (e.g., Bun without native bindings)
 let DatabaseConstructor: any = null
 let dbInstance: any = null
@@ -78,12 +85,32 @@ function createMemoryDb(): any {
   const sessions: SessionRecord[] = []
   const messages: MessageRecord[] = []
   const memories: MemoryRecord[] = []
+  const kvMemories: KvMemoryRecord[] = []
 
   return {
     prepare(sql: string) {
       return {
         run(...args: any[]) {
-          // no-op for DDL
+          // Functional handling for the memory tables so memory works in the
+          // no-native-sqlite fallback (CLI / bun). Other tables remain no-op.
+          if (sql.includes('INSERT INTO memories')) {
+            const [id, session_id, type, content, created_at] = args
+            memories.push({ id, session_id, type, content, created_at })
+          } else if (sql.includes('DELETE FROM memories')) {
+            const [id] = args
+            const i = memories.findIndex((m) => m.id === id)
+            if (i >= 0) memories.splice(i, 1)
+          } else if (sql.includes('INSERT INTO kv_memories')) {
+            const [scope, key, value, updated_at] = args
+            const existing = kvMemories.find((m) => m.scope === scope && m.key === key)
+            if (existing) { existing.value = value; existing.updated_at = updated_at }
+            else kvMemories.push({ scope, key, value, updated_at })
+          } else if (sql.includes('DELETE FROM kv_memories') && sql.includes('key = ?')) {
+            const [scope, key] = args
+            const i = kvMemories.findIndex((m) => m.scope === scope && m.key === key)
+            if (i >= 0) kvMemories.splice(i, 1)
+          }
+          // Other DELETE/eviction statements are no-ops in the fallback.
         },
         get(...args: any[]) {
           return null
@@ -91,7 +118,18 @@ function createMemoryDb(): any {
         all(...args: any[]) {
           if (sql.includes('FROM sessions')) return sessions
           if (sql.includes('FROM messages')) return messages
-          if (sql.includes('FROM memories')) return memories
+          if (sql.includes('FROM kv_memories')) {
+            const [scope] = args
+            return kvMemories
+              .filter((m) => m.scope === scope)
+              .sort((a, b) => b.updated_at - a.updated_at)
+          }
+          if (sql.includes('FROM memories')) {
+            const [sessionId, type] = args
+            return memories
+              .filter((m) => m.session_id === sessionId && (type === undefined || m.type === type))
+              .sort((a, b) => b.created_at - a.created_at)
+          }
           return []
         },
       }
@@ -166,6 +204,14 @@ function initSchema(db: DatabaseConstructor.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+
+    CREATE TABLE IF NOT EXISTS kv_memories (
+      scope      TEXT NOT NULL,
+      key        TEXT NOT NULL,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (scope, key)
+    );
   `)
 }
 
@@ -317,4 +363,41 @@ export function loadMemories(sessionId: string, type?: string): MemoryRecord[] {
 export function deleteMemory(id: string): void {
   const db = getDb()
   db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+}
+
+// ── Keyed (scoped) memory CRUD ──
+// Used by the global memory layer. Keyed by (scope, key) so a write to an
+// existing key supersedes the old value instead of accumulating contradictions.
+
+/** Max number of entries kept per scope; oldest (by updated_at) are evicted. */
+const MAX_KV_ENTRIES_PER_SCOPE = 50
+
+export function setKvMemory(scope: string, key: string, value: string): KvMemoryRecord {
+  const db = getDb()
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO kv_memories (scope, key, value, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(scope, key, value, now)
+
+  // Anti-bloat: evict oldest entries beyond the cap for this scope.
+  db.prepare(`
+    DELETE FROM kv_memories
+    WHERE scope = ? AND key NOT IN (
+      SELECT key FROM kv_memories WHERE scope = ? ORDER BY updated_at DESC LIMIT ?
+    )
+  `).run(scope, scope, MAX_KV_ENTRIES_PER_SCOPE)
+
+  return { scope, key, value, updated_at: now }
+}
+
+export function getKvMemories(scope: string): KvMemoryRecord[] {
+  const db = getDb()
+  return db.prepare('SELECT * FROM kv_memories WHERE scope = ? ORDER BY updated_at DESC').all(scope) as KvMemoryRecord[]
+}
+
+export function deleteKvMemory(scope: string, key: string): void {
+  const db = getDb()
+  db.prepare('DELETE FROM kv_memories WHERE scope = ? AND key = ?').run(scope, key)
 }

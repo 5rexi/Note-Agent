@@ -24,11 +24,10 @@ describe('estimateTokens', () => {
     expect(tokens).toBeLessThanOrEqual(110)
   })
 
-  it('should estimate CJK text', () => {
+  it('should estimate CJK text at ~1 token per char (conservative)', () => {
     const text = '中'.repeat(30)
     const tokens = estimateTokens(text)
-    expect(tokens).toBeGreaterThanOrEqual(18)
-    expect(tokens).toBeLessThanOrEqual(22)
+    expect(tokens).toBe(30)
   })
 })
 

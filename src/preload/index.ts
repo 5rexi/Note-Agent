@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AgentEvent } from '../agent'
 
+export type ShellEnvType = 'cmd' | 'powershell' | 'gitbash' | 'wsl' | 'bash' | 'zsh' | 'sh' | 'native'
+
 export interface ElectronAPI {
   // Workspaces
   getWorkspaces: () => Promise<any[]>
@@ -53,13 +55,14 @@ export interface ElectronAPI {
   snapshotBackup: (path: string) => Promise<{ success: boolean; error?: string }>
   getUndoCount: (path: string) => Promise<{ count: number }>
   listFiles: (dir: string) => Promise<{ entries: any[]; error?: string }>
-  latexCompile: (path: string) => Promise<{ pdfPath?: string; error?: string; log?: string }>
+  latexCompile: (path: string, opts?: { force?: boolean; fast?: boolean }) => Promise<{ pdfPath?: string; synctexPath?: string; error?: string; log?: string; deps?: string[] }>
+  synctexForward: (payload: { synctexPath: string; sourceFile: string; line: number }) => Promise<{ page: number; x: number; y: number } | null>
+  synctexInverse: (payload: { synctexPath: string; page: number; x: number; y: number }) => Promise<{ file: string; line: number } | null>
   latexCheckEnv: () => Promise<{ found: Array<{ name: string; path: string }>; bundled: string | null; error?: string }>
   latexVerifyCompiler: (path: string) => Promise<{ ok: boolean; version?: string; error?: string }>
   latexDownloadTectonic: () => Promise<{ taskId: string | null; error?: string }>
   latexGetBundledPath: () => Promise<{ path: string | null }>
   latexRemoveBundled: () => Promise<{ success: boolean; error?: string }>
-  officeConvertToPdf: (path: string) => Promise<{ pdfPath?: string; error?: string }>
   wordCheckEnv: () => Promise<{ found: Array<{ name: string; path: string }>; bundled: string | null; error?: string }>
   wordVerifySoffice: (path: string) => Promise<{ ok: boolean; version?: string; error?: string }>
   wordGetBundledPath: () => Promise<{ path: string | null }>
@@ -114,6 +117,7 @@ export interface ElectronAPI {
       apis?: string[]
       mcpServers?: string[]
     }
+    createKind?: 'skill' | 'mcp' | 'api'
   }) => Promise<{ success: boolean; error?: string }>
   agentResolvePermission: (payload: { sessionId: string; toolCallId: string; allow: boolean }) => Promise<{ success: boolean; error?: string }>
   agentCancel: (sessionId: string) => Promise<{ success: boolean; error?: string }>
@@ -121,6 +125,7 @@ export interface ElectronAPI {
   agentClearSession: (sessionId: string) => Promise<{ success: boolean }>
   agentSwitchModel: (payload: { sessionId: string; tier?: 'weak' | 'medium' | 'strong'; model?: string }) => Promise<{ success: boolean; error?: string }>
   agentGetCostReport: (sessionId: string) => Promise<{ stats: Array<{ provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; callCount: number }>; total: { input: number; output: number } }>
+  recallSearch: (payload: { query: string; sessionId?: string; workspacePath?: string; limit?: number }) => Promise<{ hits: Array<{ session_id: string; role: string; content: string; created_at: number; title?: string }>; summaries: Array<{ id: string; title: string; summary: string | null; created_at: number }> }>
   agentGetSwitchHistory: (sessionId: string) => Promise<any[]>
   agentGetTodoList: (sessionId: string) => Promise<Array<{ text: string; completed: boolean; createdAt: string }>>
   agentUndoAll: (sessionId: string) => Promise<{ success: boolean; restored?: number; error?: string }>
@@ -132,10 +137,11 @@ export interface ElectronAPI {
   listModels: (provider: string, baseUrl: string, apiKey: string) => Promise<{ models: string[]; error?: string }>
   onAgentEvent: (callback: (sessionId: string, event: AgentEvent) => void) => () => void
 
-  // Shell Environment (Windows)
+  // Shell Environment
+  // (mirror of main/shell-env ShellEnvType; 'native' kept for back-compat)
   shellEnvDetect: () => Promise<{ gitbash?: string; wsl: boolean }>
-  shellEnvGet: () => Promise<{ type: 'gitbash' | 'wsl' | 'native'; path?: string } | null>
-  shellEnvSet: (config: { type: 'gitbash' | 'wsl' | 'native'; path?: string }) => Promise<{ success: boolean }>
+  shellEnvGet: () => Promise<{ type: ShellEnvType; path?: string } | null>
+  shellEnvSet: (config: { type: ShellEnvType; path?: string }) => Promise<{ success: boolean }>
   shellEnvHasSetup: () => Promise<boolean>
 
   // Python LSP
@@ -260,13 +266,14 @@ const api: ElectronAPI = {
   snapshotBackup: (path) => ipcRenderer.invoke('fs:snapshotBackup', path),
   getUndoCount: (path) => ipcRenderer.invoke('fs:getUndoCount', path),
   listFiles: (dir) => ipcRenderer.invoke('fs:listFiles', dir),
-  latexCompile: (path) => ipcRenderer.invoke('latex:compile', path),
+  latexCompile: (path, opts) => ipcRenderer.invoke('latex:compile', path, opts),
+  synctexForward: (payload) => ipcRenderer.invoke('synctex:forward', payload),
+  synctexInverse: (payload) => ipcRenderer.invoke('synctex:inverse', payload),
   latexCheckEnv: () => ipcRenderer.invoke('latex:checkEnv'),
   latexVerifyCompiler: (path) => ipcRenderer.invoke('latex:verifyCompiler', path),
   latexDownloadTectonic: () => ipcRenderer.invoke('latex:downloadTectonic'),
   latexGetBundledPath: () => ipcRenderer.invoke('latex:getBundledPath'),
   latexRemoveBundled: () => ipcRenderer.invoke('latex:removeBundled'),
-  officeConvertToPdf: (path) => ipcRenderer.invoke('office:convertToPdf', path),
   wordCheckEnv: () => ipcRenderer.invoke('word:checkEnv'),
   wordVerifySoffice: (path) => ipcRenderer.invoke('word:verifySoffice', path),
   wordGetBundledPath: () => ipcRenderer.invoke('word:getBundledPath'),
@@ -332,6 +339,7 @@ const api: ElectronAPI = {
   agentClearSession: (sessionId) => ipcRenderer.invoke('agent:clearSession', sessionId),
   agentSwitchModel: (payload) => ipcRenderer.invoke('agent:switchModel', payload),
   agentGetCostReport: (sessionId) => ipcRenderer.invoke('agent:getCostReport', sessionId),
+  recallSearch: (payload) => ipcRenderer.invoke('recall:search', payload),
   agentGetSwitchHistory: (sessionId) => ipcRenderer.invoke('agent:getSwitchHistory', sessionId),
   agentGetTodoList: (sessionId) => ipcRenderer.invoke('agent:todoList', sessionId),
   agentUndoAll: (sessionId) => ipcRenderer.invoke('agent:undoAll', sessionId),

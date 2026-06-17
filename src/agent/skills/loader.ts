@@ -189,10 +189,35 @@ function loadSkillFromDir(dirPath: string, id: string): Skill | undefined {
   }
 
   try {
-    return parseSkillMd(content, id, sourcePath)
+    const skill = parseSkillMd(content, id, sourcePath)
+    if (skill) {
+      skill.dir = dirPath
+      skill.files = listSkillFiles(dirPath)
+    }
+    return skill
   } catch {
     return undefined
   }
+}
+
+/** List a skill's bundled files (scripts/resources), excluding SKILL.md itself. */
+function listSkillFiles(dirPath: string, prefix = '', depth = 0): string[] {
+  if (depth > 3) return []
+  const out: string[] = []
+  try {
+    for (const entry of readdirSync(dirPath)) {
+      if (entry.startsWith('.')) continue
+      const full = join(dirPath, entry)
+      const rel = prefix ? `${prefix}/${entry}` : entry
+      const st = statSync(full)
+      if (st.isDirectory()) {
+        out.push(...listSkillFiles(full, rel, depth + 1))
+      } else if (!/^skill\.md$/i.test(entry)) {
+        out.push(rel)
+      }
+    }
+  } catch { /* ignore */ }
+  return out
 }
 
 function scanSkillsDir(dirPath: string): Skill[] {
@@ -259,6 +284,9 @@ export function formatSkillsContext(skills: Skill[]): string | undefined {
     if (skill.alwaysInject && skill.promptTemplate) {
       parts.push('\n**Active Guidelines (always apply):**')
       parts.push(skill.promptTemplate)
+      parts.push(formatSkillResources(skill))
+    } else if (skill.files && skill.files.length > 0) {
+      parts.push(`_(ships ${skill.files.length} bundled file(s); activate to use)_`)
     }
   }
 
@@ -277,5 +305,24 @@ export function getSkillPrompt(skill: Skill, context?: Record<string, string>): 
     }
   }
 
+  prompt += formatSkillResources(skill)
   return prompt
+}
+
+/**
+ * Tell the model where the skill's bundled files live so it can read/run them
+ * (scripts via executeCommand, resources via readFile). This is what lets a
+ * skill ship runnable scripts, not just instructions.
+ */
+export function formatSkillResources(skill: Skill): string {
+  if (!skill.dir || !skill.files || skill.files.length === 0) return ''
+  const scripts = skill.files.filter((f) => /\.(py|js|cjs|mjs|sh|ps1|rb|ts)$/i.test(f))
+  const lines = [`\n\n## Skill files (in ${skill.dir})`]
+  lines.push('This skill ships bundled files. Reference them by their path inside the skill directory above.')
+  for (const f of skill.files) lines.push(`- ${f}`)
+  if (scripts.length > 0) {
+    lines.push('To run a bundled script, call executeCommand with its full path, e.g.:')
+    lines.push(`  python "${skill.dir}/${scripts[0]}"   (or node / bash as appropriate)`)
+  }
+  return lines.join('\n')
 }

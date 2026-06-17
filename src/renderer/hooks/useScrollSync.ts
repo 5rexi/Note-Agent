@@ -14,26 +14,42 @@ export function useEditorPreviewScrollSync(
 
   useEffect(() => {
     if (!enabled || !editor || !previewRef.current) return
-
     const preview = previewRef.current
 
-    const handleEditorScroll = editor.onDidScrollChange((e) => {
+    // Sorted [line, offsetTop] anchors from `data-source-line` on rendered blocks.
+    const anchors = (): Array<{ line: number; top: number }> => {
+      const els = preview.querySelectorAll<HTMLElement>('[data-source-line]')
+      const list: Array<{ line: number; top: number }> = []
+      els.forEach((el) => {
+        const line = parseInt(el.dataset.sourceLine || '', 10)
+        if (line > 0) list.push({ line, top: el.offsetTop })
+      })
+      return list.sort((a, b) => a.line - b.line)
+    }
+
+    // Editor top line → align the matching preview block to the top.
+    const handleEditorScroll = editor.onDidScrollChange(() => {
       if (isSyncingRef.current) return
+      const a = anchors()
+      if (a.length === 0) return
+      const topLine = editor.getVisibleRanges()[0]?.startLineNumber || 1
+      let lo = a[0]
+      for (const x of a) { if (x.line <= topLine) lo = x; else break }
       isSyncingRef.current = true
-      const maxEditor = Math.max(1, editor.getScrollHeight() - editor.getLayoutInfo().height)
-      const ratio = e.scrollTop / maxEditor
-      const maxPreview = Math.max(1, preview.scrollHeight - preview.clientHeight)
-      preview.scrollTop = ratio * maxPreview
+      preview.scrollTo({ top: Math.max(0, lo.top - 8) })
       requestAnimationFrame(() => { isSyncingRef.current = false })
     })
 
+    // Preview top → reveal the corresponding source line.
     const handlePreviewScroll = () => {
       if (isSyncingRef.current) return
+      const a = anchors()
+      if (a.length === 0) return
+      const st = preview.scrollTop
+      let lo = a[0]
+      for (const x of a) { if (x.top <= st + 8) lo = x; else break }
       isSyncingRef.current = true
-      const maxPreview = Math.max(1, preview.scrollHeight - preview.clientHeight)
-      const ratio = preview.scrollTop / maxPreview
-      const maxEditor = Math.max(1, editor.getScrollHeight() - editor.getLayoutInfo().height)
-      editor.setScrollTop(ratio * maxEditor)
+      editor.revealLineNearTop(lo.line)
       requestAnimationFrame(() => { isSyncingRef.current = false })
     }
 

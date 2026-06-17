@@ -7,6 +7,16 @@
 import { readFileSync, statSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
 
+/**
+ * Hash on NORMALIZED (LF) content so a pure line-ending conversion (CRLF↔LF,
+ * e.g. the editor re-saving a Windows file) does NOT false-trigger the
+ * stale-write guard.
+ */
+function contentHashOf(path: string): string {
+  const content = readFileSync(path, 'utf-8').replace(/\r\n/g, '\n')
+  return createHash('sha256').update(content).digest('hex').slice(0, 16)
+}
+
 export interface FileState {
   path: string
   mtimeMs: number
@@ -27,8 +37,7 @@ class FileStateCache {
     }
 
     const stat = statSync(path)
-    const content = readFileSync(path, 'utf-8')
-    const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+    const hash = contentHashOf(path)
 
     const state: FileState = {
       path,
@@ -56,8 +65,7 @@ class FileStateCache {
 
     const stat = statSync(path)
     // Always recompute hash for reliability (mtime may not change in rapid writes)
-    const content = readFileSync(path, 'utf-8')
-    const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+    const hash = contentHashOf(path)
     if (hash !== cached.contentHash) {
       return { changed: true, reason: `File was modified externally (content hash changed)` }
     }

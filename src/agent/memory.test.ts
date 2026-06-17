@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import {
   loadWorkspaceMemory,
-  loadUserProfile,
+  loadGlobalMemory,
   buildMemoryContext,
   formatMemoryContext,
   appendSessionMemory,
@@ -12,13 +12,13 @@ import {
   clearSessionMemory,
   extractKeyPoints,
 } from './memory'
+import { setKvMemory, deleteKvMemory } from './persistence'
 import { existsSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 
 const TEST_WS = join(process.cwd(), 'test-workspace-memory')
 const TEST_NOTEAGENT = join(TEST_WS, '.note_agent', 'NOTEAGENT.md')
-const TEST_USER_PROFILE = join(homedir(), '.note_agent', 'user-profile.md')
+const GLOBAL_TEST_KEY = '__test_pref__'
 
 describe('loadWorkspaceMemory', () => {
   beforeEach(() => {
@@ -68,30 +68,36 @@ describe('buildMemoryContext', () => {
     if (existsSync(TEST_WS)) {
       rmSync(TEST_WS, { recursive: true, force: true })
     }
-    if (existsSync(TEST_USER_PROFILE)) {
-      rmSync(TEST_USER_PROFILE)
-    }
+    deleteKvMemory('global', GLOBAL_TEST_KEY)
   })
 
   it('should return workspace memory when present', () => {
     writeFileSync(TEST_NOTEAGENT, 'Project uses Next.js', 'utf-8')
     const ctx = buildMemoryContext(TEST_WS)
     expect(ctx.workspaceMemory).toBe('Project uses Next.js')
-    expect(ctx.userProfile).toBeUndefined()
+    expect(ctx.globalMemory).toBeUndefined()
   })
 
-  it('should return user profile when present', () => {
-    writeFileSync(TEST_USER_PROFILE, 'User prefers 2-space indentation', 'utf-8')
+  it('should return global memory when present', () => {
+    setKvMemory('global', GLOBAL_TEST_KEY, 'prefers 2-space indentation')
     const ctx = buildMemoryContext(TEST_WS)
-    expect(ctx.userProfile).toBe('User prefers 2-space indentation')
+    expect(ctx.globalMemory).toContain('prefers 2-space indentation')
   })
 
   it('should return both when present', () => {
     writeFileSync(TEST_NOTEAGENT, 'Project info', 'utf-8')
-    writeFileSync(TEST_USER_PROFILE, 'User info', 'utf-8')
+    setKvMemory('global', GLOBAL_TEST_KEY, 'user info')
     const ctx = buildMemoryContext(TEST_WS)
     expect(ctx.workspaceMemory).toBe('Project info')
-    expect(ctx.userProfile).toBe('User info')
+    expect(ctx.globalMemory).toContain('user info')
+  })
+
+  it('loadGlobalMemory supersedes on same key (real update)', () => {
+    setKvMemory('global', GLOBAL_TEST_KEY, 'first')
+    setKvMemory('global', GLOBAL_TEST_KEY, 'second')
+    const mem = loadGlobalMemory()
+    expect(mem).toContain('second')
+    expect(mem).not.toContain('first')
   })
 })
 
@@ -100,17 +106,17 @@ describe('formatMemoryContext', () => {
     const formatted = formatMemoryContext({ workspaceMemory: 'Project info' })
     expect(formatted).toContain('Project Context')
     expect(formatted).toContain('Project info')
-    expect(formatted).not.toContain('User Profile')
+    expect(formatted).not.toContain('Global Memory')
   })
 
   it('should format all three memories', () => {
     const formatted = formatMemoryContext({
       workspaceMemory: 'Project info',
-      userProfile: 'User info',
+      globalMemory: 'User info',
       sessionMemory: 'Session info',
     })
     expect(formatted).toContain('Project Context')
-    expect(formatted).toContain('User Profile')
+    expect(formatted).toContain('Global Memory')
     expect(formatted).toContain('Session Memory')
   })
 

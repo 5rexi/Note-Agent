@@ -1,9 +1,44 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useAtom, useAtomValue } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { Loader2, FileText, AlertCircle, RefreshCw, List, ExternalLink, Quote, Undo } from 'lucide-react'
 import { toast } from 'sonner'
 import { renderAsync } from 'docx-preview'
-import { themeAtom, editorStateAtom } from '../../atoms'
+import { themeAtom, editorStateAtom, outlineAtom, type OutlineItem } from '../../atoms'
+
+/** Best-effort heading extraction from the rendered docx-preview DOM (docx
+ *  headings become styled <p>, not <h1>): detect by tag, heading style class,
+ *  or a larger+bold font vs the body baseline. Positions are for scroll-jump. */
+function extractWordOutline(article: HTMLElement, scrollContainer: HTMLElement): OutlineItem[] {
+  const els = Array.from(article.querySelectorAll('p, h1, h2, h3, h4, h5, h6')) as HTMLElement[]
+  const sizes = els.map((p) => parseFloat(getComputedStyle(p).fontSize) || 0).filter(Boolean).sort((a, b) => a - b)
+  const baseline = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 16
+  const scTop = scrollContainer.getBoundingClientRect().top
+  const items: OutlineItem[] = []
+  els.forEach((el, i) => {
+    const text = (el.textContent || '').trim()
+    if (!text || text.length > 150) return
+    const tag = el.tagName.toLowerCase()
+    let level = 0
+    if (/^h[1-6]$/.test(tag)) {
+      level = parseInt(tag[1], 10)
+    } else {
+      const cls = String(el.className || '')
+      if (/heading|标题|title/i.test(cls)) {
+        const lm = /(\d)/.exec(cls); level = lm ? Math.min(6, parseInt(lm[1], 10)) : 2
+      } else {
+        const cs = getComputedStyle(el)
+        const fs = parseFloat(cs.fontSize) || baseline
+        const bold = cs.fontWeight === 'bold' || parseInt(cs.fontWeight, 10) >= 600
+        if (fs >= baseline * 1.15 && bold) level = fs >= baseline * 1.6 ? 1 : fs >= baseline * 1.3 ? 2 : 3
+      }
+    }
+    if (level > 0) {
+      const top = el.getBoundingClientRect().top - scTop + scrollContainer.scrollTop
+      items.push({ id: 'w' + i, title: text.slice(0, 120), level, top })
+    }
+  })
+  return items
+}
 
 interface WordViewerProps {
   filePath: string
@@ -22,6 +57,8 @@ export default function WordViewer({ filePath }: WordViewerProps) {
   const theme = useAtomValue(themeAtom)
   const isDark = theme === 'dark'
   const [editorState, setEditorState] = useAtom(editorStateAtom)
+  const setOutline = useSetAtom(outlineAtom)
+  const outlineItemsRef = useRef<OutlineItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showStructure, setShowStructure] = useState(false)
@@ -31,6 +68,21 @@ export default function WordViewer({ filePath }: WordViewerProps) {
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null)
   const [selectedParagraphs, setSelectedParagraphs] = useState<{ startIdx: number; endIdx: number } | null>(null)
   const [canUndo, setCanUndo] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Ctrl/Cmd + wheel → zoom the document preview.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      setZoom((z) => Math.max(0.5, Math.min(3, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; visible: boolean } | null>(null)
   const [editingParagraph, setEditingParagraph] = useState<number | null>(null)
   const isSavingRef = useRef(false)
@@ -110,6 +162,19 @@ export default function WordViewer({ filePath }: WordViewerProps) {
         })
       }
 
+      // Build the chapter outline from the rendered headings.
+      if (containerRef.current) {
+        const article = (containerRef.current.querySelector('article') || containerRef.current) as HTMLElement
+        const sc = containerRef.current.parentElement
+        if (sc) {
+          requestAnimationFrame(() => {
+            const items = extractWordOutline(article, sc)
+            outlineItemsRef.current = items
+            setOutline({ items, activeId: items[0]?.id ?? null })
+          })
+        }
+      }
+
       // Restore exact scroll position after re-rendering.
       // Use requestAnimationFrame so the DOM has fully settled after renderAsync.
       if (restoreScrollTop !== undefined && containerRef.current) {
@@ -143,10 +208,31 @@ export default function WordViewer({ filePath }: WordViewerProps) {
           },
         },
       }))
+      // Highlight the current chapter in the outline.
+      const items = outlineItemsRef.current
+      if (items.length > 0) {
+        const st = scrollContainer.scrollTop + 8
+        let activeId = items[0].id
+        for (const it of items) { if ((it.top ?? 0) <= st) activeId = it.id; else break }
+        setOutline((o) => (o.activeId === activeId ? o : { ...o, activeId }))
+      }
     }
     scrollContainer.addEventListener('scroll', handler)
     return () => scrollContainer.removeEventListener('scroll', handler)
-  }, [filePath])
+  }, [filePath, setOutline])
+
+  // Jump to a chapter clicked in the OutlinePanel (Word items carry `top`).
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const d = (e as CustomEvent).detail as OutlineItem
+      if (d?.top != null) {
+        const sc = containerRef.current?.parentElement
+        sc?.scrollTo({ top: Math.max(0, d.top - 8), behavior: 'smooth' })
+      }
+    }
+    window.addEventListener('outline:jump', onJump)
+    return () => window.removeEventListener('outline:jump', onJump)
+  }, [])
 
   // Trigger document load when filePath changes, restoring saved scroll
   useEffect(() => {
@@ -566,7 +652,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
 
       {/* Content area */}
       <div className="flex-1 overflow-hidden relative">
-        <div className="h-full overflow-auto">
+        <div ref={scrollRef} className="h-full overflow-auto">
           {/* Main rendering container — ALWAYS mounted */}
           <div
             ref={containerRef}
@@ -575,6 +661,7 @@ export default function WordViewer({ filePath }: WordViewerProps) {
               background: isDark ? '#141414' : '#fff',
               color: isDark ? '#d0d0d0' : 'inherit',
               minHeight: '100%',
+              zoom,
             }}
             onMouseUp={() => {
               if (editingParagraph !== null) return

@@ -9,6 +9,10 @@ export class Database {
 
   constructor() {
     this.db = new DatabaseConstructor(DB_PATH)
+    // Enforce ON DELETE CASCADE (off by default in SQLite). Without this,
+    // deleting a task/session/workspace orphans its messages instead of
+    // removing them — so "delete = full forget" only holds with this on.
+    this.db.pragma('foreign_keys = ON')
   }
 
   close() {
@@ -229,6 +233,13 @@ export class Database {
       `)
     }
 
+    // Migration: add `summary` to sessions (one-line recall index per conversation).
+    // Lives on the session row → removed by the session cascade on delete (full forget).
+    const sessionColsForSummary = this.db.prepare("PRAGMA table_info(sessions)").all() as any[]
+    if (!sessionColsForSummary.find((c) => c.name === 'summary')) {
+      this.db.prepare('ALTER TABLE sessions ADD COLUMN summary TEXT').run()
+    }
+
     // ── Knowledge Base Schema ──
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS knowledge_folders (
@@ -424,6 +435,80 @@ export class Database {
     return this.db.prepare(sql).all(...params)
   }
 
+  // ── Conversation recall ──
+
+  /** Strip long base64 blobs (image data) from a stored message content string. */
+  private static stripImageBlobs(content: string): string {
+    return content.replace(/"data"\s*:\s*"[A-Za-z0-9+/=]{100,}"/g, '"data":"[image removed]"')
+  }
+
+  /** Set the one-line summary used by the recall index. */
+  setSessionSummary(sessionId: string, summary: string) {
+    this.db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, sessionId)
+  }
+
+  /** Per-conversation summary index for a workspace (newest first). */
+  getSessionSummaries(workspacePath: string): Array<{ id: string; title: string; summary: string | null; created_at: number }> {
+    return this.db.prepare(`
+      SELECT s.id, t.title AS title, s.summary AS summary, s.created_at AS created_at
+      FROM sessions s
+      JOIN tasks t ON s.task_id = t.id
+      JOIN workspaces w ON t.workspace_id = w.id
+      WHERE w.path = ? AND s.summary IS NOT NULL AND s.summary != ''
+      ORDER BY s.created_at DESC
+    `).all(workspacePath) as any[]
+  }
+
+  /**
+   * Full-text-ish search over persisted message content (LIKE), with image blobs
+   * stripped from returned snippets. Scope: a single session, or all sessions in
+   * a workspace (resolved via tasks.workspace_id → workspaces.path).
+   */
+  searchMessages(
+    query: string,
+    opts: { sessionId?: string; workspacePath?: string; limit?: number } = {},
+  ): Array<{ session_id: string; role: string; content: string; created_at: number; title?: string }> {
+    const limit = Math.min(opts.limit ?? 20, 100)
+    const like = `%${query}%`
+    let rows: any[]
+    if (opts.sessionId) {
+      rows = this.db.prepare(`
+        SELECT m.session_id, m.role, m.content, m.created_at
+        FROM messages m
+        WHERE m.session_id = ? AND m.content LIKE ?
+        ORDER BY m.created_at DESC LIMIT ?
+      `).all(opts.sessionId, like, limit) as any[]
+    } else if (opts.workspacePath) {
+      rows = this.db.prepare(`
+        SELECT m.session_id, m.role, m.content, m.created_at, t.title AS title
+        FROM messages m
+        JOIN sessions s ON m.session_id = s.id
+        JOIN tasks t ON s.task_id = t.id
+        JOIN workspaces w ON t.workspace_id = w.id
+        WHERE w.path = ? AND m.content LIKE ?
+        ORDER BY m.created_at DESC LIMIT ?
+      `).all(opts.workspacePath, like, limit) as any[]
+    } else {
+      return []
+    }
+    for (const r of rows) r.content = Database.stripImageBlobs(String(r.content))
+    return rows
+  }
+
+  /** Retention: strip base64 image data from messages older than `beforeTs` (unix seconds). */
+  stripOldImages(beforeTs: number): number {
+    const rows = this.db.prepare(
+      "SELECT id, content FROM messages WHERE created_at < ? AND content LIKE '%\"type\":\"image\"%'",
+    ).all(beforeTs) as any[]
+    const update = this.db.prepare('UPDATE messages SET content = ? WHERE id = ?')
+    let n = 0
+    for (const r of rows) {
+      const stripped = Database.stripImageBlobs(String(r.content))
+      if (stripped !== r.content) { update.run(stripped, r.id); n++ }
+    }
+    return n
+  }
+
   // ── Settings ──
   getSetting(key: string) {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any
@@ -514,16 +599,32 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_session_snapshots_session ON session_file_snapshots(session_id);
       CREATE INDEX IF NOT EXISTS idx_session_snapshots_file ON session_file_snapshots(session_id, file_path);
     `)
+    // Migration: `was_created` marks files that did NOT exist before the turn,
+    // so undo deletes them instead of restoring content.
+    const cols = this.db.prepare('PRAGMA table_info(session_file_snapshots)').all() as any[]
+    if (!cols.find((c) => c.name === 'was_created')) {
+      this.db.prepare('ALTER TABLE session_file_snapshots ADD COLUMN was_created INTEGER NOT NULL DEFAULT 0').run()
+    }
   }
 
-  saveSessionSnapshot(sessionId: string, filePath: string, content: string) {
+  /** True if we already captured a before-snapshot for this file this session. */
+  hasSessionSnapshot(sessionId: string, filePath: string): boolean {
     this.initSessionSnapshots()
-    this.db.prepare('INSERT INTO session_file_snapshots (session_id, file_path, content) VALUES (?, ?, ?)').run(sessionId, filePath, content)
+    const row = this.db.prepare('SELECT 1 FROM session_file_snapshots WHERE session_id = ? AND file_path = ? LIMIT 1').get(sessionId, filePath)
+    return !!row
   }
 
-  getSessionSnapshots(sessionId: string): Array<{ file_path: string; content: string }> {
+  /** Save a before-snapshot. Idempotent per (session, file) — keeps the first (true "before") state. */
+  saveSessionSnapshot(sessionId: string, filePath: string, content: string, wasCreated = false) {
     this.initSessionSnapshots()
-    return this.db.prepare('SELECT file_path, content FROM session_file_snapshots WHERE session_id = ?').all(sessionId) as any[]
+    if (this.hasSessionSnapshot(sessionId, filePath)) return
+    this.db.prepare('INSERT INTO session_file_snapshots (session_id, file_path, content, was_created) VALUES (?, ?, ?, ?)')
+      .run(sessionId, filePath, content, wasCreated ? 1 : 0)
+  }
+
+  getSessionSnapshots(sessionId: string): Array<{ file_path: string; content: string; was_created: number }> {
+    this.initSessionSnapshots()
+    return this.db.prepare('SELECT file_path, content, was_created FROM session_file_snapshots WHERE session_id = ?').all(sessionId) as any[]
   }
 
   clearSessionSnapshots(sessionId: string) {

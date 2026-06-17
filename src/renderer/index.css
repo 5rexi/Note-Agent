@@ -21,6 +21,8 @@
   --na-bg-hover: #E0E0E0;
   --na-bg-message: #F0F0F0;
   --na-bg-popover: #FFFFFF;
+  --na-bg-card: #FFFFFF;
+  --na-bg-canvas: #F4F4F6;
   --na-text-primary: #1A1A1A;
   --na-text-secondary: #525252;
   --na-text-tertiary: #737373;
@@ -28,6 +30,13 @@
   --na-user-bubble: #1A1A1A;
   --na-user-bubble-text: #FFFFFF;
   --na-accent-soft: rgba(26,26,26,0.08);
+  /* Indigo brand accent — primary actions, active/selected states, focus rings. */
+  --na-primary: #6366F1;
+  --na-primary-strong: #6366F1;
+  --na-primary-hover: #4F46E5;
+  --na-primary-soft: rgba(99,102,241,0.10);
+  --na-primary-contrast: #FFFFFF;
+  --na-focus-ring: rgba(99,102,241,0.40);
   --na-border-default: #E5E5E5;
   --na-border-subtle: #EEEEEE;
   --na-status-explore: #2563EB;
@@ -52,13 +61,22 @@
   --na-bg-hover: #222222;
   --na-bg-message: #1A1A1A;
   --na-bg-popover: #1A1A1A;
+  --na-bg-card: #1E1E1E;
+  --na-bg-canvas: #0E0E0E;
   --na-text-primary: #FAFAFA;
-  --na-text-secondary: #A0A0A0;
-  --na-text-tertiary: #6B6B6B;
+  --na-text-secondary: #B8B8B8;
+  --na-text-tertiary: #8C8C8C;
   --na-accent: #FAFAFA;
   --na-user-bubble: #3A3A3A;
   --na-user-bubble-text: #FFFFFF;
   --na-accent-soft: rgba(250,250,250,0.08);
+  /* Indigo accent — lighter for text/active tints in dark; solid bg stays saturated. */
+  --na-primary: #818CF8;
+  --na-primary-strong: #6366F1;
+  --na-primary-hover: #4F46E5;
+  --na-primary-soft: rgba(129,140,248,0.16);
+  --na-primary-contrast: #FFFFFF;
+  --na-focus-ring: rgba(129,140,248,0.45);
   --na-border-default: #2A2A2A;
   --na-border-subtle: #1A1A1A;
   --na-status-explore: #3B82F6;
@@ -256,6 +274,54 @@ body {
 @keyframes na-popover-appear {
   from { opacity: 0; transform: translateY(4px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Reply pop-out: fade + slight scale-up from the card. */
+@keyframes na-popout-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes na-popout-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.96); }
+}
+.na-popout-in { animation: na-popout-in 150ms cubic-bezier(0.16, 1, 0.3, 1); }
+.na-popout-out { animation: na-popout-out 150ms ease-in forwards; }
+@keyframes na-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes na-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+.na-backdrop-in { animation: na-backdrop-in 150ms ease-out; }
+.na-backdrop-out { animation: na-backdrop-out 150ms ease-in forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .na-popout-in, .na-popout-out, .na-backdrop-in, .na-backdrop-out { animation: none; }
+}
+
+/* Reply card: inline expand to the "long card". */
+@keyframes na-expand-in {
+  from { opacity: 0.4; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.na-expand-in { animation: na-expand-in 160ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .na-expand-in { animation: none; } }
+
+/* Active-card accent rail pulse while the agent works. */
+@keyframes na-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.na-pulse { animation: na-pulse 1.2s ease-in-out infinite; }
+
+/* Thinking placeholder dots. */
+.na-typing-dot { display:inline-block; width:5px; height:5px; border-radius:50%; background: var(--na-text-tertiary); animation: na-typing 1s ease-in-out infinite; }
+@keyframes na-typing { 0%,100% { transform: translateY(0); opacity: 0.4; } 50% { transform: translateY(-3px); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .na-pulse, .na-typing-dot { animation: none; } }
+
+/* Reply card: lift on hover for depth. */
+.na-card-hover:hover {
+  box-shadow: var(--na-shadow-md);
+  border-color: var(--na-primary-soft);
+}
+
+/* Composer input: indigo focus ring when focused. */
+.na-composer:focus-within {
+  border-color: var(--na-primary) !important;
+  box-shadow: 0 0 0 3px var(--na-focus-ring);
 }
 
 @keyframes fade-in {

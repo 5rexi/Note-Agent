@@ -1,163 +1,58 @@
 /**
- * Merges adjacent assistant messages.
+ * Collapses each agent "reply" into a single assistant message so it renders as
+ * ONE card. A reply is everything between two user messages: all the assistant
+ * messages of a turn (the model may emit several across tool rounds) plus the
+ * interleaved tool messages. We concatenate the assistant text and accumulate
+ * all tool_calls; tool messages themselves are dropped (their results are shown
+ * via the assistant's tool-call metadata).
  *
- * 1. Empty-content assistants with tool_calls are merged into the next
- *    content-bearing assistant (original behaviour).
- * 2. Short "bridge" assistants (≤120 chars) that sit between tool results
- *    and the next assistant are also merged forward. This prevents a single
- *    task from being visually fragmented into many tiny bubbles when the
- *    model emits a brief "let me check..." text before its next tool call.
- *
- * All tool_calls are accumulated and merged into the final assistant message.
+ * The first assistant message of the turn is kept as the base (stable id +
+ * reasoning), so the card has one consistent key for expand/pop-out.
  */
 export function mergeAssistantMessages(msgs: any[]): any[] {
   const result: any[] = []
   let i = 0
 
   while (i < msgs.length) {
-    const msg = msgs[i]
+    const m = msgs[i]
 
-    // Not an assistant — pass through
-    if (msg.role !== 'assistant') {
-      result.push({ ...msg })
+    if (m.role === 'user') {
+      result.push({ ...m })
       i++
       continue
     }
 
-    const content = (msg.content || '').trim()
-    const hasContent = content !== ''
-    const isShortBridge = hasContent && content.length <= 120
-    let hasToolCalls = false
-    if (msg.tool_calls && typeof msg.tool_calls === 'string') {
-      try {
-        const parsed = JSON.parse(msg.tool_calls)
-        hasToolCalls = Array.isArray(parsed) && parsed.length > 0
-      } catch {
-        hasToolCalls = false
-      }
-    }
-
-    // If this assistant has substantial content (not a short bridge) and
-    // no tool_calls, keep it standalone. Tool-carrying assistants are
-    // always merged forward so the whole round appears as one bubble.
-    if (hasContent && !isShortBridge && !hasToolCalls) {
-      result.push({ ...msg })
+    // A leading tool message with no assistant to attach to — skip it.
+    if (m.role === 'tool') {
       i++
       continue
     }
 
-    // Accumulate tool_calls from this (empty or short-bridge) assistant
-    let accumulatedTC: any[] = []
-    if (msg.tool_calls && typeof msg.tool_calls === 'string') {
-      try {
-        const parsed = JSON.parse(msg.tool_calls)
-        if (Array.isArray(parsed)) accumulatedTC = parsed
-      } catch { /* ignore invalid JSON */ }
-    }
-    let j = i + 1
-
-    // Skip over tool results and any further empty/short-bridge assistants
-    while (j < msgs.length) {
-      const next = msgs[j]
-      if (next.role === 'tool') {
-        j++
-      } else if (next.role === 'assistant') {
-        const nextContent = (next.content || '').trim()
-        let nextHasToolCalls = false
-        if (next.tool_calls && typeof next.tool_calls === 'string') {
+    // m.role === 'assistant' → gather the whole turn up to the next user message.
+    const base = m
+    const contents: string[] = []
+    const toolCalls: any[] = []
+    let j = i
+    while (j < msgs.length && msgs[j].role !== 'user') {
+      const cur = msgs[j]
+      if (cur.role === 'assistant') {
+        const c = (cur.content || '').trim()
+        if (c) contents.push(c)
+        if (cur.tool_calls && typeof cur.tool_calls === 'string') {
           try {
-            const parsed = JSON.parse(next.tool_calls)
-            nextHasToolCalls = Array.isArray(parsed) && parsed.length > 0
-          } catch {
-            nextHasToolCalls = false
-          }
+            const parsed = JSON.parse(cur.tool_calls)
+            if (Array.isArray(parsed)) toolCalls.push(...parsed)
+          } catch { /* ignore malformed tool_calls */ }
         }
-        // Only skip empty or short-bridge assistants.  Any assistant with
-        // substantial content (>120 chars) is a merge TARGET, regardless of
-        // whether it also carries tool_calls.
-        if (nextContent.length > 120) {
-          break
-        }
-        if (next.tool_calls && typeof next.tool_calls === 'string') {
-          try {
-            const parsed = JSON.parse(next.tool_calls)
-            if (Array.isArray(parsed)) accumulatedTC.push(...parsed)
-          } catch {
-            // ignore invalid tool_calls JSON
-          }
-        }
-        j++
-      } else {
-        break
       }
+      j++
     }
 
-    // If we found a following substantial assistant, merge everything into it
-    if (j < msgs.length && msgs[j].role === 'assistant') {
-      const target = msgs[j]
-      let targetTC: any[] = []
-      if (target.tool_calls && typeof target.tool_calls === 'string') {
-        try {
-          targetTC = JSON.parse(target.tool_calls)
-          if (!Array.isArray(targetTC)) targetTC = []
-        } catch {
-          targetTC = []
-        }
-      }
-      const mergedContent = (isShortBridge || hasToolCalls) && !target.content?.includes(content)
-        ? `${content}\n\n${target.content || ''}`
-        : target.content
-      result.push({
-        ...target,
-        content: mergedContent,
-        tool_calls:
-          accumulatedTC.length > 0 || targetTC.length > 0
-            ? JSON.stringify([...accumulatedTC, ...targetTC])
-            : undefined,
-      })
-      i = j + 1
-      continue
-    }
-
-    // No following assistant — try to merge backward into the most recent
-    // substantial assistant in the result array
-    if (accumulatedTC.length > 0) {
-      let merged = false
-      for (let k = result.length - 1; k >= 0; k--) {
-        const prev = result[k]
-        if (prev.role === 'assistant' && (prev.content || '').trim() !== '') {
-          let prevTC: any[] = []
-          if (prev.tool_calls && typeof prev.tool_calls === 'string') {
-            try {
-              prevTC = JSON.parse(prev.tool_calls)
-              if (!Array.isArray(prevTC)) prevTC = []
-            } catch {
-              prevTC = []
-            }
-          }
-          const mergedContent = (isShortBridge || hasToolCalls) && !prev.content?.includes(content)
-            ? `${prev.content}\n\n${content}`
-            : prev.content
-          result[k] = {
-            ...prev,
-            content: mergedContent,
-            tool_calls: JSON.stringify([...prevTC, ...accumulatedTC]),
-          }
-          merged = true
-          break
-        }
-      }
-      if (!merged) {
-        result.push({
-          ...msg,
-          tool_calls: accumulatedTC.length > 0 ? JSON.stringify(accumulatedTC) : msg.tool_calls,
-        })
-      }
-    } else if (hasContent) {
-      // Short bridge with no tool_calls and no place to merge — keep it
-      result.push({ ...msg })
-    }
-
+    result.push({
+      ...base,
+      content: contents.join('\n\n'),
+      tool_calls: toolCalls.length > 0 ? JSON.stringify(toolCalls) : undefined,
+    })
     i = j
   }
 

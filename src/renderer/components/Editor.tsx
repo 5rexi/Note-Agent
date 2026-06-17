@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { useAtom, useAtomValue } from 'jotai'
-import { editorStateAtom, currentFilePathAtom, currentWorkspaceAtom, currentTaskAtom, themeAtom } from '../atoms'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import { editorStateAtom, currentFilePathAtom, currentWorkspaceAtom, currentTaskAtom, themeAtom, outlineAtom, type OutlineItem } from '../atoms'
 import { toast } from 'sonner'
 import Editor from '@monaco-editor/react'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
@@ -12,6 +12,83 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 
 // Delayed Markdown preview: renders on next frame so Monaco isn't blocked
+/**
+ * Rehype plugin: stamp block elements with `data-source-line` (the source line
+ * they came from) so the preview can be scroll-synced by structure, not by %.
+ */
+function rehypeSourceLine() {
+  const BLOCK = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'pre', 'ul', 'ol', 'blockquote', 'table', 'hr', 'img'])
+  return (tree: any) => {
+    const walk = (node: any) => {
+      if (node.type === 'element' && node.position?.start?.line && BLOCK.has(node.tagName)) {
+        node.properties = node.properties || {}
+        node.properties.dataSourceLine = node.position.start.line
+      }
+      if (node.children) for (const c of node.children) walk(c)
+    }
+    walk(tree)
+  }
+}
+
+/** Register LaTeX/BibTeX syntax highlighting on Monaco (once). Monaco ships no
+ *  LaTeX language, so .tex files render as plain text without this. */
+let texLangRegistered = false
+function registerTexLanguages(monaco: any) {
+  if (texLangRegistered || !monaco?.languages) return
+  if (monaco.languages.getLanguages().some((l: any) => l.id === 'latex')) { texLangRegistered = true; return }
+  texLangRegistered = true
+
+  monaco.languages.register({ id: 'latex', extensions: ['.tex', '.ltx', '.cls', '.sty'], aliases: ['LaTeX', 'latex', 'tex'] })
+  monaco.languages.setMonarchTokensProvider('latex', {
+    defaultToken: '',
+    tokenizer: {
+      root: [
+        [/%.*$/, 'comment'],
+        [/\\(begin|end)(\s*\{)([^}]*)(\})/, ['keyword.control', 'delimiter.curly', 'type.identifier', 'delimiter.curly']],
+        [/\\[a-zA-Z@]+\*?/, 'keyword'],
+        [/\\[^a-zA-Z]/, 'keyword'],
+        [/\$\$/, { token: 'string', next: '@displaymath' }],
+        [/\$/, { token: 'string', next: '@math' }],
+        [/[{}]/, 'delimiter.curly'],
+        [/[[\]]/, 'delimiter.square'],
+        [/[&~^_]/, 'operator'],
+      ],
+      math: [
+        [/\$/, { token: 'string', next: '@pop' }],
+        [/\\[a-zA-Z@]+/, 'keyword'],
+        [/[^$\\]+/, 'string'],
+        [/./, 'string'],
+      ],
+      displaymath: [
+        [/\$\$/, { token: 'string', next: '@pop' }],
+        [/\\[a-zA-Z@]+/, 'keyword'],
+        [/[^$\\]+/, 'string'],
+        [/./, 'string'],
+      ],
+    },
+  })
+  monaco.languages.setLanguageConfiguration('latex', {
+    comments: { lineComment: '%' },
+    brackets: [['{', '}'], ['[', ']']],
+    autoClosingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '$', close: '$' }],
+    surroundingPairs: [{ open: '{', close: '}' }, { open: '[', close: ']' }, { open: '$', close: '$' }],
+  })
+
+  monaco.languages.register({ id: 'bibtex', extensions: ['.bib', '.bst'], aliases: ['BibTeX'] })
+  monaco.languages.setMonarchTokensProvider('bibtex', {
+    tokenizer: {
+      root: [
+        [/@[a-zA-Z]+/, 'keyword'],
+        [/[a-zA-Z_][\w-]*(?=\s*=)/, 'attribute.name'],
+        [/"/, { token: 'string', next: '@string' }],
+        [/[{}]/, 'delimiter.curly'],
+        [/%.*$/, 'comment'],
+      ],
+      string: [[/"/, { token: 'string', next: '@pop' }], [/[^"]+/, 'string']],
+    },
+  })
+}
+
 function MarkdownPreview({ content }: { content: string }) {
   const [ready, setReady] = useState(false)
 
@@ -44,11 +121,11 @@ function MarkdownPreview({ content }: { content: string }) {
 
   // Disable expensive syntax highlighting for very large files
   const isLarge = content.length > 100000
-  const rehypePlugins = isLarge ? [rehypeKatex] : [rehypeHighlight, rehypeKatex]
+  const rehypePlugins = isLarge ? [rehypeKatex, rehypeSourceLine] : [rehypeHighlight, rehypeKatex, rehypeSourceLine]
 
   return (
     <div className="markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins as any}>
         {content}
       </ReactMarkdown>
     </div>
@@ -65,11 +142,40 @@ import TerminalPanel, { type TerminalPanelHandle } from './TerminalPanel'
 import { viewerRegistry } from './file-viewers/registry'
 import { type FileKind, type FileTypeInfo, FILE_TYPE_MAP, getFileInfo } from './file-viewers/file-types'
 import { useEditorPreviewScrollSync } from '../hooks/useScrollSync'
+import { useContextMenu } from './ui/ContextMenu'
+import { Quote as QuoteIcon, Copy as CopyIcon } from 'lucide-react'
 
 // (FileKind, FileTypeInfo, FILE_TYPE_MAP, getFileInfo now live in ./file-viewers/file-types)
 
+/** Parse Markdown (#) or LaTeX (\chapter/\section/…) headings into an outline. */
+function parseOutline(content: string, kind: string): OutlineItem[] {
+  const lines = content.split('\n')
+  const items: OutlineItem[] = []
+  if (kind === 'markdown') {
+    let inFence = false
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue }
+      if (inFence) continue
+      const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i])
+      if (m) items.push({ id: `l${i + 1}`, title: m[2].trim(), level: m[1].length, line: i + 1 })
+    }
+  } else if (kind === 'latex') {
+    const levelMap: Record<string, number> = { part: 1, chapter: 1, section: 2, subsection: 3, subsubsection: 4, paragraph: 5, subparagraph: 6 }
+    for (let i = 0; i < lines.length; i++) {
+      const m = /\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{(.+?)\}/.exec(lines[i])
+      if (!m) continue
+      if (lines[i].slice(0, m.index).includes('%')) continue // commented out
+      const title = m[2].replace(/\\[a-zA-Z]+\*?/g, '').replace(/[{}]/g, '').trim() || m[2].trim()
+      items.push({ id: `l${i + 1}`, title, level: levelMap[m[1]] ?? 2, line: i + 1 })
+    }
+  }
+  return items
+}
+
 export default function FileEditor() {
   const [editorState, setEditorState] = useAtom(editorStateAtom)
+  const setOutline = useSetAtom(outlineAtom)
+  const outlineItemsRef = useRef<OutlineItem[]>([])
   const currentFile = useAtomValue(currentFilePathAtom)
   const workspace = useAtomValue(currentWorkspaceAtom)
   const task = useAtomValue(currentTaskAtom)
@@ -93,6 +199,11 @@ export default function FileEditor() {
   const activeTabRef = useRef<HTMLButtonElement | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const [syncScrollEnabled, setSyncScrollEnabled] = useState(editorState.syncScrollEnabled ?? false)
+  // Resizable split: preview pane width as a % of the editor area (drag to adjust).
+  const [previewWidth, setPreviewWidth] = useState(45)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
+  const previewCtx = useContextMenu()
+  const monacoCtx = useContextMenu()
   const [terminalVisible, setTerminalVisible] = useState(false)
   const [terminalPosition, setTerminalPosition] = useState<'top' | 'bottom'>('bottom')
   const terminalPanelRef = useRef<TerminalPanelHandle>(null)
@@ -129,6 +240,43 @@ export default function FileEditor() {
 
   // Keep refs in sync to avoid stale closures in Monaco actions
   useEffect(() => { currentFileRef.current = currentFile }, [currentFile])
+
+  // Produce the document outline for md/latex (chapter menu). Other kinds are
+  // cleared here; .docx is handled by WordViewer.
+  useEffect(() => {
+    const kind = currentFile ? getFileInfo(currentFile).kind : ''
+    if (kind !== 'markdown' && kind !== 'latex') {
+      outlineItemsRef.current = []
+      setOutline({ items: [], activeId: null })
+      return
+    }
+    const timer = setTimeout(() => {
+      const items = parseOutline(content, kind)
+      outlineItemsRef.current = items
+      setOutline((o) => {
+        const keep = o.activeId && items.some((i) => i.id === o.activeId)
+        return { items, activeId: keep ? o.activeId : (items[0]?.id ?? null) }
+      })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [content, currentFile, setOutline])
+
+  // Jump to a chapter clicked in the OutlinePanel.
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const d = (e as CustomEvent).detail as OutlineItem
+      const ed = editorRef.current
+      if (d?.line && ed) {
+        // Put the clicked chapter at the TOP of the viewport (not centered) so
+        // the outline highlight tracks the chapter you jumped to, not the one above.
+        ed.setPosition({ lineNumber: d.line, column: 1 })
+        ed.setScrollTop(ed.getTopForLineNumber(d.line))
+        ed.focus()
+      }
+    }
+    window.addEventListener('outline:jump', onJump)
+    return () => window.removeEventListener('outline:jump', onJump)
+  }, [])
   useEffect(() => { workspaceRef.current = workspace }, [workspace])
   useEffect(() => { editorStateRef.current = editorState }, [editorState])
 
@@ -358,6 +506,10 @@ export default function FileEditor() {
     setSaveIndicator('saved')
     setTimeout(() => setSaveIndicator('idle'), 3000)
 
+    // Notify viewers in THIS renderer directly (the workspace fs.watch is
+    // unreliable on Windows, so LaTeX auto-compile-on-save can't rely on it).
+    try { window.dispatchEvent(new CustomEvent('file:saved', { detail: { path: fullPath } })) } catch { /* ignore */ }
+
     // Check if this file is part of an unpacked docx — auto repack
     let checkDir = fullPath
     for (let i = 0; i < 10; i++) {
@@ -546,9 +698,72 @@ export default function FileEditor() {
     }
   }, [currentFile, workspace, loadFileContent])
 
+  // Unified app context menu for Monaco (its native menu is disabled). Attached
+  // via React onContextMenuCapture on the editor wrapper so it ALWAYS fires
+  // (capture phase, independent of Monaco's internal handlers / mount timing).
+  // Clipboard is done directly (navigator.clipboard + executeEdits), NOT Monaco's
+  // clipboard actions, which silently no-op when the menu click moves focus.
+  const handleEditorContextMenu = useCallback((e: React.MouseEvent) => {
+    const editor = editorRef.current
+    if (!editor) return
+    e.preventDefault()
+    const sel = editor.getSelection()
+    const model = editor.getModel()
+    const hasSel = !!(sel && !sel.isEmpty())
+    const selText = hasSel && model ? model.getValueInRange(sel) : ''
+
+    const copy = async () => {
+      if (!selText) return
+      try { await navigator.clipboard.writeText(selText) }
+      catch { editor.focus(); editor.getAction('editor.action.clipboardCopyAction')?.run() }
+    }
+    const cut = async () => {
+      if (!hasSel || !sel) return
+      try { await navigator.clipboard.writeText(selText) }
+      catch { editor.focus(); editor.getAction('editor.action.clipboardCutAction')?.run(); return }
+      editor.focus()
+      editor.executeEdits('cut', [{ range: sel, text: '', forceMoveMarkers: true }])
+    }
+    const paste = async () => {
+      let text = ''
+      try { text = await navigator.clipboard.readText() }
+      catch { editor.focus(); editor.getAction('editor.action.clipboardPasteAction')?.run(); return }
+      if (!text) return
+      editor.focus()
+      const r = editor.getSelection() || sel
+      if (r) editor.executeEdits('paste', [{ range: r, text, forceMoveMarkers: true }])
+    }
+    const selectAll = () => { editor.focus(); if (model) editor.setSelection(model.getFullModelRange()) }
+
+    monacoCtx.open(e, [
+      { icon: CopyIcon, label: '复制', shortcut: 'Ctrl+C', disabled: !hasSel, onClick: copy },
+      { label: '剪切', shortcut: 'Ctrl+X', disabled: !hasSel, onClick: cut },
+      { label: '粘贴', shortcut: 'Ctrl+V', onClick: paste },
+      { separator: true },
+      ...(hasSel ? [{
+        icon: QuoteIcon, label: '引用到对话', onClick: () => {
+          const fp = model?.uri?.fsPath || ''
+          const fileName = fp.replace(/\\/g, '/').split('/').pop() || fp
+          window.dispatchEvent(new CustomEvent('editor:text-selected', {
+            detail: {
+              type: getFileInfo(currentFileRef.current || '').kind === 'markdown' ? 'markdown' : getFileInfo(currentFileRef.current || '').kind === 'latex' ? 'latex' : 'code',
+              filePath: fp, fileName, selectedText: selText,
+              range: { startLine: sel!.startLineNumber, startColumn: sel!.startColumn, endLine: sel!.endLineNumber, endColumn: sel!.endColumn },
+            },
+          }))
+        },
+      }] : []),
+      { separator: true },
+      { label: '全选', shortcut: 'Ctrl+A', onClick: selectAll },
+      { label: '命令面板', shortcut: 'F1', onClick: () => { editor.focus(); editor.getAction('editor.action.quickCommand')?.run() } },
+    ])
+  }, [monacoCtx])
+
   const handleEditorMount = (editor: any, monacoInstance: any) => {
     monacoRef.current = monacoInstance
     editorRef.current = editor
+    registerTexLanguages(monacoInstance)
+
     editor.onDidChangeCursorPosition((e: any) => {
       setCursorPos({ line: e.position.lineNumber, column: e.position.column })
       const fp = currentFileRef.current
@@ -578,6 +793,14 @@ export default function FileEditor() {
           },
         },
       }))
+      // Highlight the chapter at the top of the viewport in the outline.
+      const items = outlineItemsRef.current
+      if (items.length > 0) {
+        const top = editor.getVisibleRanges()[0]?.startLineNumber ?? 1
+        let activeId = items[0].id
+        for (const it of items) { if ((it.line ?? 0) <= top) activeId = it.id; else break }
+        setOutline((o) => (o.activeId === activeId ? o : { ...o, activeId }))
+      }
     })
     // Restore scroll + cursor when model changes (tab switch).
     // Delay with rAF + setTimeout so Monaco React's setValue() (which resets
@@ -600,16 +823,17 @@ export default function FileEditor() {
         }
       }
       if (state) {
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            if (state!.scrollTop != null) {
-              editor.setScrollTop(state!.scrollTop)
-            }
-            if (state!.cursorLine != null) {
-              editor.setPosition({ lineNumber: state!.cursorLine, column: state!.cursorColumn || 1 })
-            }
-          }, 60)
-        })
+        // Apply the saved scroll/cursor across a few frames so it lands the
+        // instant the content finishes loading — minimizing the top-then-jump
+        // flash (a single delayed apply showed the top first).
+        let tries = 0
+        const restore = () => {
+          if (editor.getModel() !== model) return // switched again
+          if (state!.scrollTop != null) editor.setScrollTop(state!.scrollTop)
+          if (state!.cursorLine != null) editor.setPosition({ lineNumber: state!.cursorLine, column: state!.cursorColumn || 1 })
+          if (tries++ < 4) requestAnimationFrame(restore)
+        }
+        requestAnimationFrame(restore)
       }
     })
     // Load current file content if editor is ready but content hasn't been synced yet
@@ -1163,6 +1387,7 @@ export default function FileEditor() {
       <div className="relative h-full w-full">
         {/* ===== Code editor layer — ALWAYS MOUNTED, always rendering ===== */}
         <div
+          ref={splitContainerRef}
           className="absolute inset-0 flex"
           style={{
             zIndex: isCodeLayerActive ? 1 : 0,
@@ -1177,6 +1402,7 @@ export default function FileEditor() {
               width: !showEditor ? 0 : undefined,
               overflow: 'hidden',
             }}
+            onContextMenuCapture={handleEditorContextMenu}
           >
             <Editor
               height="100%"
@@ -1192,6 +1418,7 @@ export default function FileEditor() {
               }
               options={{
                 minimap: { enabled: false },
+                contextmenu: false, // replaced by the app's unified context menu (below)
                 fontSize: editorFontSize,
                 fontFamily: editorFontFamily,
                 wordWrap: 'on',
@@ -1226,7 +1453,35 @@ export default function FileEditor() {
               onChange={handleEditorChange}
               onMount={handleEditorMount}
             />
+            {monacoCtx.menu}
           </div>
+
+          {/* Draggable divider (split only) */}
+          {showPreview && view === 'split' && (
+            <div
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const container = splitContainerRef.current
+                if (!container) return
+                const onMove = (ev: MouseEvent) => {
+                  const rect = container.getBoundingClientRect()
+                  const pct = ((rect.right - ev.clientX) / rect.width) * 100
+                  setPreviewWidth(Math.min(80, Math.max(20, pct)))
+                }
+                const onUp = () => {
+                  window.removeEventListener('mousemove', onMove)
+                  window.removeEventListener('mouseup', onUp)
+                  document.body.style.cursor = ''
+                }
+                document.body.style.cursor = 'col-resize'
+                window.addEventListener('mousemove', onMove)
+                window.addEventListener('mouseup', onUp)
+              }}
+              className="shrink-0 cursor-col-resize hover:bg-[var(--na-primary-soft)] transition-colors"
+              style={{ width: 5, background: 'var(--na-border-subtle)' }}
+              title="拖动调整宽度"
+            />
+          )}
 
           {/* Preview panel (markdown / latex) */}
           {showPreview && (
@@ -1234,19 +1489,39 @@ export default function FileEditor() {
               ref={previewRef}
               className="overflow-auto"
               style={{
-                flex: view === 'split' ? '0 0 45%' : 1,
+                flex: view === 'split' ? `0 0 ${previewWidth}%` : 1,
                 width: view === 'split' ? undefined : undefined,
-                borderLeft: view === 'split' ? '1px solid var(--na-border-subtle)' : 'none',
+                borderLeft: view === 'split' ? 'none' : 'none',
                 background: 'var(--na-bg-panel)',
               }}
             >
               {isMarkdown && (
-                <div className="p-6">
+                <div
+                  className="p-6"
+                  onContextMenu={(e) => {
+                    const sel = window.getSelection()?.toString().trim() || ''
+                    if (!sel) return
+                    const fileName = fullPath.replace(/\\/g, '/').split('/').pop() || fullPath
+                    previewCtx.open(e, [
+                      { icon: QuoteIcon, label: '引用到对话', onClick: () => {
+                        window.dispatchEvent(new CustomEvent('editor:text-selected', { detail: { type: 'markdown', filePath: fullPath, fileName, selectedText: sel, range: { startLine: 1, startColumn: 1, endLine: 1, endColumn: 1 } } }))
+                        window.getSelection()?.removeAllRanges()
+                      } },
+                      { icon: CopyIcon, label: '复制', onClick: () => navigator.clipboard.writeText(sel).catch(() => {}) },
+                    ])
+                  }}
+                >
                   <MarkdownPreview content={content} />
+                  {previewCtx.menu}
                 </div>
               )}
               {isLatex && (
-                <LaTeXViewer filePath={fullPath} />
+                <LaTeXViewer
+                  filePath={fullPath}
+                  editor={editorRef.current}
+                  sourceFile={fullPath}
+                  syncEnabled={view === 'split' && syncScrollEnabled}
+                />
               )}
             </div>
           )}

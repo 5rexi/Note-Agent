@@ -78,6 +78,11 @@ export async function executeSingleTool(
     return { toolCallId: tc.id, toolName: tc.name, result: { error: `Tool '${tc.name}' not found` } }
   }
 
+  // Don't start a tool if the turn was already cancelled.
+  if (ctx.signal?.aborted) {
+    return { toolCallId: tc.id, toolName: tc.name, result: { error: 'Aborted by user' } }
+  }
+
   try {
     const validated = tool.validateInput(tc.input)
 

@@ -153,9 +153,15 @@ interface NativeOutcome {
   reason?: string
 }
 
-async function fetchWithNative(url: string, maxChars: number): Promise<NativeOutcome> {
+async function fetchWithNative(url: string, maxChars: number, parentSignal?: AbortSignal): Promise<NativeOutcome> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  // Honor the turn's abort signal in addition to the fetch timeout.
+  const onParentAbort = () => controller.abort()
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort()
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true })
+  }
 
   try {
     const response = await fetch(url, {
@@ -196,6 +202,7 @@ async function fetchWithNative(url: string, maxChars: number): Promise<NativeOut
     }
   } finally {
     clearTimeout(timer)
+    parentSignal?.removeEventListener('abort', onParentAbort)
   }
 }
 
@@ -242,14 +249,14 @@ export const WebFetchTool: Tool<Input, string> = {
     return inputSchema.parse(raw)
   },
 
-  async call(input, _ctx): Promise<ToolResult<string>> {
+  async call(input, ctx): Promise<ToolResult<string>> {
     const maxChars = input.maxChars ?? DEFAULT_MAX_CHARS
 
     // ─── Tier 1: native fetch + heuristic extraction ───────────────────────
     let nativeOutcome: NativeOutcome | null = null
     let nativeError: string | null = null
     try {
-      nativeOutcome = await fetchWithNative(input.url, maxChars)
+      nativeOutcome = await fetchWithNative(input.url, maxChars, ctx.signal)
     } catch (err: any) {
       nativeError = err.message
     }

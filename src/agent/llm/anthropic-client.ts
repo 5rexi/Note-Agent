@@ -7,6 +7,7 @@
  */
 import type { LLMConfig, ContentPart } from '../types'
 import { withRetry } from '../retry'
+import { CACHE_BREAKPOINT } from '../prompt/minimal'
 import { supportsVision, toAnthropicContent } from './format-conversion'
 import {
   type LLMClient,
@@ -20,7 +21,7 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
   const url = `${baseUrl}/v1/messages`
 
   return {
-    async *stream(messages, tools, signal) {
+    async *stream(messages, tools, signal, options) {
       const apiMessages = messages
         .filter((m) => m.role !== 'system')
         .map((m) => {
@@ -80,13 +81,33 @@ export function createAnthropicClient(config: LLMConfig): LLMClient {
       if (config.temperature != null) {
         body.temperature = config.temperature
       }
-      if (systemMsg) body.system = systemMsg.content
+      // Prompt caching: split the system prompt on the cache breakpoint and
+      // mark the stable prefix as ephemeral-cacheable so it (plus the tool
+      // schemas) is reused across rounds instead of re-billed each turn.
+      if (systemMsg) {
+        const [stable, ...rest] = String(systemMsg.content).split(CACHE_BREAKPOINT)
+        const volatile = rest.join(CACHE_BREAKPOINT)
+        const systemBlocks: any[] = [
+          { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
+        ]
+        if (volatile.trim()) {
+          systemBlocks.push({ type: 'text', text: volatile })
+        }
+        body.system = systemBlocks
+      }
       if (tools.length > 0) {
-        body.tools = tools.map((t) => ({
+        body.tools = tools.map((t, i) => ({
           name: t.name,
           description: t.description,
           input_schema: t.parameters,
+          // Cache the (stable) tool schemas by marking the final tool.
+          ...(i === tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
         }))
+        // 'any' forces the model to use one of the provided tools (empty-round
+        // recovery); otherwise let it decide.
+        if (options?.toolChoice === 'required') {
+          body.tool_choice = { type: 'any' }
+        }
       }
 
       const res = await withRetry(

@@ -31,70 +31,38 @@ export function setSubagentParentConfig(config: LLMConfig): void {
   parentLLMConfig = config
 }
 
+/**
+ * Build the COMPACT report handed back to the parent. The whole point of a
+ * subagent is to keep its noisy step-by-step work out of the parent context, so
+ * we return only the subagent's final answer plus a one-line provenance note —
+ * not a replay of every tool call.
+ */
 export function summarizeSubagentResult(messages: Message[]): string {
-  const lines: string[] = ['## Subagent Result\n']
-
-  // Collect all messages in chronological order with role labels
-  const history: string[] = []
-  for (const m of messages) {
-    if (m.role === 'user') {
-      const content = typeof (m as any).content === 'string' ? (m as any).content : JSON.stringify((m as any).content)
-      history.push(`User: ${content.slice(0, 300)}`)
-    } else if (m.role === 'assistant') {
-      const content = typeof (m as any).content === 'string' ? (m as any).content : ''
-      if (content.trim()) {
-        history.push(`Assistant: ${content.slice(0, 500)}`)
-      }
-    } else if (m.role === 'tool') {
-      const toolName = (m as any).toolName || 'unknown'
-      const result = (m as any).result
-      if (result?.error) {
-        history.push(`Tool(${toolName}) ERROR: ${result.error.slice(0, 300)}`)
-      } else if (result?.data) {
-        const dataStr = typeof result.data === 'string' ? result.data : JSON.stringify(result.data)
-        history.push(`Tool(${toolName}): ${dataStr.slice(0, 400)}`)
-      } else {
-        history.push(`Tool(${toolName}): ${JSON.stringify(result).slice(0, 300)}`)
-      }
-    }
-  }
-
-  // Include full chronological history (truncated per entry above)
-  if (history.length > 0) {
-    lines.push('**Execution History:**')
-    for (const entry of history) {
-      lines.push(`- ${entry}`)
-    }
-  }
-
-  // Extract final assistant answer (last assistant message with content)
-  const assistantMsgs = messages
+  const finalAnswer = messages
     .filter((m) => m.role === 'assistant')
     .map((m) => (typeof (m as any).content === 'string' ? (m as any).content : ''))
     .filter((c) => c.trim())
-  if (assistantMsgs.length > 0) {
-    const final = assistantMsgs[assistantMsgs.length - 1]
-    lines.push(`\n**Final Answer:**\n${final.slice(0, 2000)}`)
+    .pop() || ''
+
+  const toolNames = [...new Set(
+    messages.filter((m) => m.role === 'tool').map((m) => (m as any).toolName).filter(Boolean),
+  )]
+  const errorCount = messages.filter(
+    (m) => m.role === 'tool' && (m as any).result && (m as any).result.error,
+  ).length
+
+  const lines: string[] = ['## Subagent Result']
+  lines.push(finalAnswer ? finalAnswer.slice(0, 2000) : '(subagent produced no final summary)')
+  if (toolNames.length > 0) {
+    const errNote = errorCount > 0 ? `; ${errorCount} tool error(s)` : ''
+    lines.push(`\n_Tools used: ${toolNames.join(', ')}${errNote}_`)
   }
-
-  // List tools used
-  const toolNames = messages
-    .filter((m) => m.role === 'tool')
-    .map((m) => (m as any).toolName)
-    .filter(Boolean)
-  const uniqueTools = [...new Set(toolNames)]
-  if (uniqueTools.length > 0) {
-    lines.push(`\n**Tools Used:** ${uniqueTools.join(', ')}`)
-  }
-
-  lines.push(`\n**Total Messages:** ${messages.length}`)
-
   return lines.join('\n')
 }
 
 export const SubagentTool: Tool<Input, string> = {
   name: 'subagent',
-  description: 'Delegate a sub-task to an isolated sub-agent. CRITICAL: the task description MUST be under 500 characters. Do NOT include file contents, code, or large text blocks — the subagent has its own tools and can read files independently. Use this for: large exploration, refactoring across modules, complex multi-step tasks. For simple tasks, handle directly. Default mode inherits from parent session (e.g. execute mode allows write tools).',
+  description: 'Delegate a sub-task to an isolated sub-agent that runs in its own context and returns ONLY a short summary. CRITICAL: the task description MUST be under 500 characters. Do NOT include file contents, code, or large text blocks — the subagent has its own tools and can read files independently. Use this for: large exploration, refactoring across modules, complex multi-step tasks. Also use it to debug a noisy/self-contained error (lots of logs, stack traces, or trial-and-error fixes) so that mess stays out of the main thread — but fix obvious errors (typos, missing imports) or errors tied to what you just did directly. For simple tasks, handle directly. Default mode inherits from parent session (e.g. execute mode allows write tools).',
   inputSchema,
 
   isReadOnly() { return true },
@@ -117,7 +85,16 @@ export const SubagentTool: Tool<Input, string> = {
     const modeHierarchy: Record<PermissionMode, number> = { explore: 0, ask: 1, execute: 2, research: 2 }
     const mode: PermissionMode =
       modeHierarchy[requestedMode] > modeHierarchy[parentMode] ? parentMode : requestedMode
-    const maxRounds = input.maxRounds ?? 5
+    const maxRounds = input.maxRounds ?? 8
+
+    // Already cancelled before we even start.
+    if (ctx.signal?.aborted) {
+      return { data: '', error: 'Aborted by user' }
+    }
+
+    // Bound recursion: a subagent must not spawn deeper subagents indefinitely.
+    const depth = (ctx.depth ?? 0) + 1
+    const MAX_SUBAGENT_DEPTH = 1
 
     // Enforce task length limit at runtime (safety net when model ignores prompt rules)
     const MAX_TASK_LEN = 500
@@ -136,11 +113,18 @@ export const SubagentTool: Tool<Input, string> = {
         pathHint
     }
 
-    // Filter tools by whitelist
-    const allTools = getAllTools()
-    const availableTools = input.tools && input.tools.length > 0
+    // Filter tools by whitelist. The gated install tools (installSkill/Mcp/Api)
+    // are UI-create-context only and must NEVER be reachable via a subagent.
+    const GATED_INSTALL_TOOLS = ['installSkill', 'installMcp', 'installApi']
+    const allTools = getAllTools().filter((t) => !GATED_INSTALL_TOOLS.includes(t.name))
+    let availableTools = input.tools && input.tools.length > 0
       ? allTools.filter((t) => input.tools!.includes(t.name) || input.tools!.some((a) => t.aliases?.includes(a)))
       : allTools
+
+    // At max depth, deny further nesting by stripping the subagent tool.
+    if (depth >= MAX_SUBAGENT_DEPTH) {
+      availableTools = availableTools.filter((t) => t.name !== 'subagent')
+    }
 
     if (availableTools.length === 0) {
       return { data: '', error: 'No tools available for sub-agent' }
@@ -164,9 +148,13 @@ export const SubagentTool: Tool<Input, string> = {
       maxRounds,
       shouldAvoidPermissionPrompts: true, // Background agents should not prompt user
       autoCompact: true,
+      dataSources: ctx.dataSources, // share KB folders / APIs / MCP servers
+      depth, // bound nested subagent recursion
     })
 
-    const subMessages: Message[] = []
+    // Propagate parent cancellation: aborting the turn aborts the subagent.
+    const onAbort = () => engine.abort()
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
 
     const parentId = ctx.parentToolCallId || 'unknown'
     const report = ctx.reportEvent
@@ -175,23 +163,13 @@ export const SubagentTool: Tool<Input, string> = {
       console.error(`[Subagent] Starting task: ${task.slice(0, 80)}...`)
       let roundCount = 0
       for await (const event of engine.submit(task)) {
-        if (event.type === 'text') {
-          subMessages.push({ role: 'assistant', content: event.text })
-          if (report) {
-            report({ type: 'subagent-text', parentToolCallId: parentId, text: event.text })
-          }
-        }
-        if (event.type === 'reasoning') {
-          subMessages.push({ role: 'assistant', content: event.text })
+        // Forward live progress to the parent UI (does not enter parent context).
+        if (event.type === 'text' && report) {
+          report({ type: 'subagent-text', parentToolCallId: parentId, text: event.text })
         }
         if (event.type === 'tool-use-start') {
           roundCount++
           console.error(`[Subagent] Round ${roundCount}: tool=${event.name}`)
-          subMessages.push({
-            role: 'assistant',
-            content: `Tool: ${event.name}`,
-            toolCalls: [{ id: event.toolCallId, name: event.name, input: event.input }],
-          })
           if (report) {
             report({
               type: 'subagent-tool-start',
@@ -202,40 +180,42 @@ export const SubagentTool: Tool<Input, string> = {
             })
           }
         }
-        if (event.type === 'tool-use-end') {
-          const resultStr = typeof event.result === 'string' ? event.result : JSON.stringify(event.result)
-          console.error(`[Subagent] Tool result: ${resultStr.slice(0, 120)}`)
-          subMessages.push({
-            role: 'tool',
+        if (event.type === 'tool-use-end' && report) {
+          report({
+            type: 'subagent-tool-end',
+            parentToolCallId: parentId,
             toolCallId: event.toolCallId,
-            toolName: event.name,
+            name: event.name,
             result: event.result,
           })
-          if (report) {
-            report({
-              type: 'subagent-tool-end',
-              parentToolCallId: parentId,
-              toolCallId: event.toolCallId,
-              name: event.name,
-              result: event.result,
-            })
-          }
         }
         if (event.type === 'error') {
           console.error(`[Subagent] Error: ${event.message}`)
           return { data: '', error: `Sub-agent error: ${event.message}` }
         }
-        if (event.type === 'done') {
-          console.error(`[Subagent] Round completed`)
-        }
+      }
+
+      if (ctx.signal?.aborted) {
+        return { data: '', error: 'Aborted by user' }
       }
 
       console.error(`[Subagent] Finished after ${roundCount} tool rounds`)
-      const summary = summarizeSubagentResult(engine.getMessages())
-      return { data: summary }
+      return { data: summarizeSubagentResult(engine.getMessages()) }
     } catch (err: any) {
       console.error(`[Subagent] Failed: ${err.message}`)
       return { data: '', error: `Sub-agent failed: ${err.message}` }
+    } finally {
+      ctx.signal?.removeEventListener('abort', onAbort)
+      // Roll the subagent's token usage up into the parent so cost reporting is
+      // accurate. The parent's submit loop turns a 'usage' event into addUsage.
+      if (report) {
+        const records = engine.getCostTracker().getRecords()
+        const inputTokens = records.reduce((s, r) => s + r.inputTokens, 0)
+        const outputTokens = records.reduce((s, r) => s + r.outputTokens, 0)
+        if (inputTokens || outputTokens) {
+          report({ type: 'usage', inputTokens, outputTokens })
+        }
+      }
     }
   },
 

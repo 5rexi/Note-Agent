@@ -26,26 +26,38 @@ const DEFAULT_COMPACT_CONFIG: CompactConfig = {
   enableLLMCompact: true,
 }
 
-/** 粗略估算 token 数：1 token ≈ 4 chars（英文）或 1.5 chars（中文） */
+/**
+ * Rough token estimate. Deliberately conservative (tends to slightly
+ * over-count) because the result feeds a context-window safety guard — an
+ * undercount risks a hard API rejection, an overcount only triggers
+ * compaction a little early.
+ *
+ * Rates: Latin/digits/punctuation ≈ 4 chars per token; CJK ≈ 1 token per
+ * char. Byte-level BPE often makes CJK cost ≥1 token/char, so the previous
+ * 1.5-chars-per-token rate materially undercounted CJK-heavy contexts.
+ */
 export function estimateTokens(text: string): number {
   if (!text) return 0
-  // Simple heuristic: count characters, divide by 3.5 for mixed CJK/Latin
   let latin = 0
   let cjk = 0
   for (const ch of text) {
-    if (/\p{Script=Han}/u.test(ch) || /\p{Script=Hiragana}/u.test(ch) || /\p{Script=Katakana}/u.test(ch)) {
+    if (/\p{Script=Han}/u.test(ch) || /\p{Script=Hiragana}/u.test(ch) || /\p{Script=Katakana}/u.test(ch) || /\p{Script=Hangul}/u.test(ch)) {
       cjk++
     } else {
       latin++
     }
   }
-  return Math.ceil(latin / 4 + cjk / 1.5)
+  return Math.ceil(latin / 4 + cjk)
 }
+
+/** Per-message structural overhead (role markers, delimiters), à la tiktoken. */
+const PER_MESSAGE_TOKEN_OVERHEAD = 4
 
 /** 估算消息数组的总 token 数 */
 export function estimateMessageTokens(messages: Message[]): number {
   let total = 0
   for (const msg of messages) {
+    total += PER_MESSAGE_TOKEN_OVERHEAD
     if (msg.role === 'user') {
       const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
       total += estimateTokens(content)

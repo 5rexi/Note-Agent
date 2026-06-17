@@ -110,6 +110,11 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
     path: null,
   })
 
+  // PDF/LaTeX preview render quality (oversample factor cap).
+  const [previewQuality, setPreviewQuality] = useState<'auto' | 'high' | 'balanced' | 'low'>('auto')
+  // Opt-in: fast model adds a short task brief as context before each run.
+  const [promptTaskBrief, setPromptTaskBrief] = useState(false)
+
   // Brave Search API key
   const [braveApiKey, setBraveApiKey] = useState('')
   const [braveKeyVisible, setBraveKeyVisible] = useState(false)
@@ -152,7 +157,7 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
   useEffect(() => {
     if (!open) return
     async function load() {
-      const [savedProviders, savedAppearance, savedDefault, savedGeneral, savedPresets, savedLatex, savedPandoc, savedBraveKey, savedFreeOnly, savedSearxng, savedBrowserDisabled, savedResearch] = await Promise.all([
+      const [savedProviders, savedAppearance, savedDefault, savedGeneral, savedPresets, savedLatex, savedPandoc, savedBraveKey, savedFreeOnly, savedSearxng, savedBrowserDisabled, savedResearch, savedPreviewQuality] = await Promise.all([
         window.electronAPI.getSetting('llmProviders'),
         window.electronAPI.getSetting('appearanceConfig'),
         window.electronAPI.getSetting('llmDefaultConfig'),
@@ -165,7 +170,15 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
         window.electronAPI.getSetting('searxngEndpoint'),
         window.electronAPI.getSetting('browserHostDisabled'),
         window.electronAPI.getSetting('researchConfig'),
+        window.electronAPI.getSetting('previewRenderQuality'),
       ])
+      if (savedPreviewQuality === 'high' || savedPreviewQuality === 'balanced' || savedPreviewQuality === 'low' || savedPreviewQuality === 'auto') {
+        setPreviewQuality(savedPreviewQuality)
+      }
+      try {
+        const tb = await window.electronAPI.getSetting('promptTaskBrief')
+        setPromptTaskBrief(tb === 'true')
+      } catch { /* ignore */ }
       if (savedProviders) { try { setProviders(JSON.parse(savedProviders)) } catch {} }
       if (savedAppearance) { try { setAppearance(JSON.parse(savedAppearance)) } catch {} }
       if (savedDefault) { try { setDefaultConfig(JSON.parse(savedDefault)) } catch {} }
@@ -395,9 +408,13 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
       {/* Settings content */}
       <div className="flex-1 flex flex-col" style={{ background: 'var(--na-bg-app)' }}>
         {/* Header */}
-        <div className="flex items-center justify-between shrink-0 px-4" style={{ height: 48, borderBottom: '1px solid var(--na-border-subtle)' }}>
-          <div className="flex items-center gap-2">
-            <h2 className="text-[13px] font-semibold" style={{ color: 'var(--na-text-primary)' }}>
+        <div className="flex items-center justify-between shrink-0 px-5" style={{ height: 52, borderBottom: '1px solid var(--na-border-subtle)' }}>
+          <div className="flex items-center gap-2.5">
+            {(() => {
+              const Icon = { connection: Cable, appearance: Palette, general: Settings, fileSupport: FileType, web: Globe, research: FlaskConical, about: Info }[activeTab]
+              return <Icon className="w-[18px] h-[18px]" style={{ color: 'var(--na-primary)' }} />
+            })()}
+            <h2 className="text-[14px] font-semibold" style={{ color: 'var(--na-text-primary)' }}>
               {activeTab === 'connection' && t('connection')}
               {activeTab === 'appearance' && t('appearance')}
               {activeTab === 'general' && t('general')}
@@ -876,6 +893,27 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
                   }}
                 />
 
+                {/* PDF / LaTeX preview render quality */}
+                <section className="space-y-2">
+                  <h4 className="text-[13px] font-semibold" style={{ color: 'var(--na-text-primary)' }}>{t('previewQuality')}</h4>
+                  <p className="text-[12px]" style={{ color: 'var(--na-text-tertiary)' }}>{t('previewQualityDesc')}</p>
+                  <select
+                    value={previewQuality}
+                    onChange={(e) => {
+                      const v = e.target.value as 'auto' | 'high' | 'balanced' | 'low'
+                      setPreviewQuality(v)
+                      window.electronAPI.setSetting('previewRenderQuality', v)
+                    }}
+                    className="text-[13px] px-2 py-1.5 rounded outline-none"
+                    style={{ background: 'var(--na-bg-input)', color: 'var(--na-text-primary)', border: '1px solid var(--na-border-default)', minWidth: 220 }}
+                  >
+                    <option value="auto">{t('previewQualityAuto')}</option>
+                    <option value="high">{t('previewQualityHigh')}</option>
+                    <option value="balanced">{t('previewQualityBalanced')}</option>
+                    <option value="low">{t('previewQualityLow')}</option>
+                  </select>
+                </section>
+
               </div>
             )}
 
@@ -907,6 +945,23 @@ export default function SettingsModal({ open, onClose, sidebarCollapsed, sidebar
                     <span className="text-[13px]" style={{ color: 'var(--na-text-secondary)' }}>
                       {generalConfig.reportEnabled ? t('enabled') : t('disabled')}
                     </span>
+                  </div>
+                </section>
+
+                {/* Prompt task brief (opt-in) */}
+                <section className="space-y-3">
+                  <h3 className="text-[13px] font-semibold" style={{ color: 'var(--na-text-primary)' }}>{t('taskBrief')}</h3>
+                  <p className="text-[12px]" style={{ color: 'var(--na-text-tertiary)' }}>{t('taskBriefDesc')}</p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { const v = !promptTaskBrief; setPromptTaskBrief(v); window.electronAPI.setSetting('promptTaskBrief', String(v)) }}
+                      className="relative w-10 h-5 rounded-full transition-colors"
+                      style={{ background: promptTaskBrief ? 'var(--na-accent)' : 'var(--na-border-default)' }}
+                    >
+                      <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform"
+                        style={{ left: promptTaskBrief ? 'calc(100% - 1.125rem)' : '0.125rem', boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }} />
+                    </button>
+                    <span className="text-[13px]" style={{ color: 'var(--na-text-secondary)' }}>{promptTaskBrief ? t('enabled') : t('disabled')}</span>
                   </div>
                 </section>
 
@@ -1385,16 +1440,19 @@ function NavItem({ active, onClick, icon: Icon, label, description }: { active: 
   return (
     <button
       onClick={onClick}
-      className="w-full text-left px-3 py-2.5 transition-colors rounded-lg flex items-start gap-3"
+      className="relative w-full text-left pl-3.5 pr-3 py-2.5 transition-all rounded-lg flex items-start gap-3"
       style={{
         color: active ? 'var(--na-text-primary)' : 'var(--na-text-secondary)',
-        background: active ? 'var(--na-bg-active)' : 'transparent',
+        background: active ? 'var(--na-primary-soft)' : 'transparent',
       }}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--na-bg-hover)' }}
+      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent' }}
     >
-      <Icon className="w-5 h-5 shrink-0 mt-0.5" style={{ color: active ? 'var(--na-accent)' : 'var(--na-text-tertiary)' }} />
-      <div>
+      {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full" style={{ background: 'var(--na-primary)' }} />}
+      <Icon className="w-[18px] h-[18px] shrink-0 mt-0.5" style={{ color: active ? 'var(--na-primary)' : 'var(--na-text-tertiary)' }} />
+      <div className="min-w-0">
         <div className="text-[13px] font-medium" style={{ color: active ? 'var(--na-text-primary)' : 'var(--na-text-secondary)' }}>{label}</div>
-        <div className="text-[11px] mt-0.5" style={{ color: 'var(--na-text-tertiary)' }}>{description}</div>
+        <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--na-text-tertiary)' }}>{description}</div>
       </div>
     </button>
   )
@@ -1406,9 +1464,11 @@ function genId(): string {
 
 
 // ── Shell Environment Settings (Windows only) ──
+type ShellEnvType = 'cmd' | 'powershell' | 'gitbash' | 'wsl' | 'bash' | 'zsh' | 'sh' | 'native'
+
 function ShellEnvSettings() {
   const [platform, setPlatform] = useState('')
-  const [shellEnv, setShellEnv] = useState<{ type: 'gitbash' | 'wsl' | 'native'; path?: string } | null>(null)
+  const [shellEnv, setShellEnv] = useState<{ type: ShellEnvType; path?: string } | null>(null)
   const [detected, setDetected] = useState<{ gitbash?: string; wsl: boolean }>({ wsl: false })
   const [loading, setLoading] = useState(true)
 
@@ -1426,7 +1486,7 @@ function ShellEnvSettings() {
     })()
   }, [])
 
-  const handleChange = async (type: 'gitbash' | 'wsl' | 'native') => {
+  const handleChange = async (type: ShellEnvType) => {
     const path = type === 'gitbash' ? (detected.gitbash || '') : undefined
     const cfg = { type, path }
     await window.electronAPI.shellEnvSet(cfg)
@@ -1450,7 +1510,8 @@ function ShellEnvSettings() {
         {([
           { key: 'gitbash' as const, label: 'Git Bash', desc: detected.gitbash ? `已检测到: ${detected.gitbash}` : '未检测到，请手动安装 Git for Windows' },
           { key: 'wsl' as const, label: 'WSL', desc: detected.wsl ? '已安装' : '未安装，请运行 wsl --install' },
-          { key: 'native' as const, label: '原生 cmd / PowerShell', desc: '无需安装，但部分 bash 命令不兼容' },
+          { key: 'powershell' as const, label: 'PowerShell', desc: '无需安装，适合 PowerShell cmdlet' },
+          { key: 'cmd' as const, label: '原生 cmd', desc: '无需安装，但部分 bash 命令不兼容' },
         ]).map((opt) => (
           <button
             key={opt.key}

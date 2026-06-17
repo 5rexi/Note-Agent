@@ -13,6 +13,7 @@ const inputSchema = z.object({
   endLine: z.number().int().min(1).describe('End line number (1-based)'),
   endColumn: z.number().int().min(1).describe('End column number (1-based, exclusive)'),
   replacement: z.string().describe('Replacement text'),
+  expectedText: z.string().optional().describe('STRONGLY RECOMMENDED: the exact text you believe currently occupies the range. The edit is rejected (not applied) if it does not match — this catches column miscalculations before they corrupt the file. Line endings are matched leniently.'),
 })
 
 type Input = z.infer<typeof inputSchema>
@@ -20,10 +21,9 @@ type Input = z.infer<typeof inputSchema>
 export const EditFileRangeTool: Tool<Input, { path: string; replaced: boolean }> = {
   name: 'editFileRange',
   description:
-    'Edit a file by replacing the text in a specific line:column range. ' +
-    'Line and column numbers are 1-based. The endColumn is exclusive. ' +
-    'Use this when you need to make a precise edit at a known location, ' +
-    'such as when the user has quoted a specific code selection.',
+    'Edit a file by replacing the text in a specific line:column range (1-based, endColumn EXCLUSIVE). ' +
+    'Manual column math is error-prone — PREFER editFile (search/replace with a unique snippet) when possible. ' +
+    'If you do use a range, ALWAYS pass `expectedText` (the exact current text in the range) so a miscalculated range is rejected instead of corrupting the file.',
   inputSchema,
 
   isReadOnly() { return false },
@@ -84,6 +84,29 @@ export const EditFileRangeTool: Tool<Input, { path: string; replaced: boolean }>
     const sCol = startColumn - 1
     const eLine = endLine - 1
     const eCol = endColumn - 1
+
+    // Verify the caller's column math against what is actually there. Catches
+    // off-by-one range errors BEFORE they corrupt the file (the reported
+    // "st.ructural" / "si.nal" corruption from miscalculated columns).
+    if (input.expectedText !== undefined) {
+      if (sCol > (lines[sLine]?.length ?? 0) || eCol > (lines[eLine]?.length ?? 0)) {
+        return { data: { path: input.path, replaced: false }, error: `Range column out of bounds for verification on line ${startLine}/${endLine}.` }
+      }
+      const actual = sLine === eLine
+        ? lines[sLine].slice(sCol, eCol)
+        : [lines[sLine].slice(sCol), ...lines.slice(sLine + 1, eLine), lines[eLine].slice(0, eCol)].join('\n')
+      const expected = input.expectedText.replace(/\r\n/g, '\n')
+      if (actual !== expected) {
+        return {
+          data: { path: input.path, replaced: false },
+          error:
+            `Range verification FAILED — not applied. The text currently at ` +
+            `L${startLine}:C${startColumn}–L${endLine}:C${endColumn} is:\n${JSON.stringify(actual.slice(0, 200))}\n` +
+            `but expectedText was:\n${JSON.stringify(expected.slice(0, 200))}\n` +
+            `Columns are 1-based and endColumn is EXCLUSIVE. Recheck the range, or use editFile with a unique search snippet instead.`,
+        }
+      }
+    }
 
     let newContent: string
 

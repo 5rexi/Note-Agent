@@ -33,9 +33,10 @@ const BQ = '`'.repeat(3)
 export const PPTX_SKILL_SUMMARY = [
   '## PPTX Guidelines (Summary)',
   '- ALL intermediate work MUST be in `{workspace}/.note_agent/temp/` using relative paths ONLY. NEVER use absolute paths like `/home/...` or `~/.note_agent/`.',
-  '- Create: use `pptxgenjs` npm package via executeCommand in `.note_agent/temp/`.',
-  '- Edit: unpack with `unzip` in `.note_agent/temp/`, edit XML, repack.',
-  '- Convert: use LibreOffice `soffice --headless --convert-to pdf`.',
+  '- Create (default): use `pptxgenjs` (pre-installed via NODE_PATH) via executeCommand in `.note_agent/temp/`. No install needed.',
+  '- Create (advanced): for native DrawingML shapes / template cloning, use **python-pptx** — install once with `uv pip install python-pptx` (uv is auto-installed), then run a Python script in `.note_agent/temp/`.',
+  '- Edit: unpack with the jszip Node library (or unzip) in `.note_agent/temp/`, edit XML, repack.',
+  '- Convert to PDF/preview: the app converts pptx via pandoc; for slide images, soffice/LibreOffice if available.',
   '- See full guidelines for detailed API and design rules.',
 ].join('\n')
 
@@ -52,7 +53,7 @@ export const PPTX_SKILL_CONTENT = [
   '### Creating New Presentations',
   'ALL work MUST happen inside `.note_agent/temp/`. Do NOT pollute the workspace root.',
   '',
-  '`pptxgenjs` is pre-installed via NODE_PATH. Use it directly — NEVER run `npm init` or `npm install`.',
+  '`pptxgenjs` is pre-installed via NODE_PATH — use it directly. ONLY if `node` reports `Cannot find module "pptxgenjs"`, run `npm install pptxgenjs` once (it is auto-routed into `.note_agent/`, never the workspace root), then re-run. Write the deck DIRECTLY to the final path (e.g. `pres.writeFile({ fileName: "../../output.pptx" })`) to avoid a separate copy step (copy command syntax differs per shell).',
   '',
   '**Script pattern (save to `{workspace}/.note_agent/temp/gen-ppt.js` using relative paths only):**',
   BQ + 'javascript',

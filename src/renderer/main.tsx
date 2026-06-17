@@ -73,6 +73,20 @@ loader.config({ monaco })
 
 const root = document.getElementById('root')!
 
+// Show runtime startup errors on screen instead of a blank window (helps debug
+// packaged builds where there's no console). Only paints if the app hasn't.
+function showFatal(label: string, detail: string) {
+  if (root.childElementCount > 0 && !root.querySelector('#na-fatal')) return
+  root.innerHTML = `
+    <div id="na-fatal" style="padding:32px;font-family:sans-serif;color:#444;max-width:900px">
+      <h2 style="color:#e11d48;margin:0 0 8px">⚠️ ${label}</h2>
+      <pre style="white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:8px;font-size:12px;overflow:auto;max-height:60vh">${(detail || '').replace(/</g, '&lt;')}</pre>
+      <p style="font-size:12px;color:#888">Press Ctrl+Shift+I for more, or share this with support.</p>
+    </div>`
+}
+window.addEventListener('error', (e) => showFatal('Renderer error', `${e.message}\n${(e.error && e.error.stack) || ''}`))
+window.addEventListener('unhandledrejection', (e) => showFatal('Unhandled promise rejection', String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)))
+
 // Defensive: if preload failed, show error instead of white screen
 if (!window.electronAPI) {
   root.innerHTML = `
@@ -86,10 +100,14 @@ if (!window.electronAPI) {
   throw new Error('window.electronAPI is not defined — preload failed')
 }
 
-ReactDOM.createRoot(root).render(
-  <React.StrictMode>
-    <JotaiProvider>
-      <App />
-    </JotaiProvider>
-  </React.StrictMode>
-)
+try {
+  ReactDOM.createRoot(root).render(
+    <React.StrictMode>
+      <JotaiProvider>
+        <App />
+      </JotaiProvider>
+    </React.StrictMode>
+  )
+} catch (err: any) {
+  showFatal('Failed to start', `${err?.message || err}\n${err?.stack || ''}`)
+}

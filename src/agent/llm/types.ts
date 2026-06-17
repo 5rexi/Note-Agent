@@ -13,11 +13,22 @@ export interface LLMStreamEvent {
   usage?: { inputTokens: number; outputTokens: number }
 }
 
+export interface StreamOptions {
+  /**
+   * Tool-call policy for this request.
+   * - 'auto' (default): the model decides whether to call a tool.
+   * - 'required': the model MUST call at least one tool. Used by the empty-round
+   *   recovery to force progress when a model stalls into text-only replies.
+   */
+  toolChoice?: 'auto' | 'required'
+}
+
 export interface LLMClient {
   stream(
     messages: import('../types').Message[],
     tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>,
     signal?: AbortSignal,
+    options?: StreamOptions,
   ): AsyncGenerator<LLMStreamEvent>
 }
 

@@ -16,9 +16,12 @@ import { SessionCostTracker } from '../cost'
 import { logger } from '../logger'
 import type { ModelRouter, RoutingResult } from '../router/ModelRouter'
 import type { CompactConfig } from '../compact'
-import { loadTasks, formatTasks, saveTasks } from '../tools/impl/todoWrite'
+import { loadTasks, formatTasks } from '../tools/impl/todoWrite'
 import { prepareSession, getCompletedStepIds } from './planner-integration'
 import { loadSkills, getSkillPrompt } from '../skills/loader'
+
+/** Prefix tagging the todo self-report nudge so stale ones can be pruned. */
+const TODO_NUDGE_MARKER = 'Progress check: '
 
 export interface AgentEngineOptions {
   llmConfig: LLMConfig
@@ -43,6 +46,8 @@ export interface AgentEngineOptions {
     apis?: string[]
     mcpServers?: string[]
   }
+  /** Subagent nesting depth (0 = top-level). Propagated to tool context. */
+  depth?: number
 }
 
 export class AgentEngine {
@@ -169,12 +174,19 @@ export class AgentEngine {
         throw msgErr
       }
 
+      // Create the abort controller up front so its signal can be threaded into
+      // the tool context — long-running tools (exec, fetch, subagent) need it to
+      // stop promptly when the user presses cancel.
+      this.abortController = new AbortController()
+
       const toolContext = {
         workspacePath: this.opts.workspacePath,
         mode: this.opts.mode,
         openFiles: this.opts.openFiles,
         sessionId: this.sessionId ?? undefined,
         dataSources: this.opts.dataSources,
+        signal: this.abortController.signal,
+        depth: this.opts.depth ?? 0,
       }
 
       const rules = loadPermissionRules()
@@ -253,7 +265,6 @@ export class AgentEngine {
         })
       }
 
-      this.abortController = new AbortController()
       const roundGenerator = executeRound(this.messages, {
         llmConfig: llmConfigResolver,
         tools: this.opts.tools,
@@ -268,6 +279,12 @@ export class AgentEngine {
       })
 
 
+      // Todo ownership: the model marks steps complete via the todoWrite tool.
+      // We never mutate todo state silently — only the model knows when a step
+      // made of several tool calls is actually finished. These track whether we
+      // have an outstanding "please self-report" nudge so we don't spam it.
+      let awaitingTodoSelfReport = false
+      let lastCompletedCount = -1
 
       for await (const event of roundGenerator) {
         // Collect usage data
@@ -332,21 +349,42 @@ export class AgentEngine {
           }
         }
 
-        // After tool execution, check for todo updates to broadcast progress
+        // After tool execution, broadcast todo progress and nudge self-reporting.
         if (event.type === 'tool-use-end') {
           const currentTodos = loadTasks(this.sessionId ?? undefined)
           if (currentTodos.length > 0) {
-            // Auto-mark the first incomplete todo as complete when an OUTPUT tool succeeds.
-            // Only "write/replace" type tools count as task progress — not searches/reads.
-            const outputTools = ['writeFile', 'writeFileBase64', 'replaceWordParagraph', 'createDocument', 'wordFillTemplate']
-            if (outputTools.includes(event.name)) {
-              const firstIncomplete = currentTodos.find((t) => !t.completed)
-              if (firstIncomplete) {
-                firstIncomplete.completed = true
-                saveTasks(currentTodos, this.sessionId ?? undefined)
-              }
-            }
             const completed = currentTodos.filter((t) => t.completed).length
+
+            // If the model marked something complete since our last check, the
+            // outstanding nudge (if any) has been answered — clear it.
+            if (completed !== lastCompletedCount) {
+              awaitingTodoSelfReport = false
+              lastCompletedCount = completed
+            }
+
+            // Output tools = real task progress (not searches/reads). When one
+            // succeeds and steps remain, nudge the model to self-report via
+            // todoWrite — but only once until it acts, and never silently.
+            const outputTools = ['writeFile', 'writeFileBase64', 'replaceWordParagraph', 'wordSet', 'wordBatchSet', 'wordAdd', 'wordRemove', 'createDocument', 'wordFillTemplate']
+            const r = event.result as any
+            const succeeded = !(r && typeof r === 'object' && (r.error || r.rejected || r.needsConfirmation))
+            const nextIncomplete = currentTodos.find((t) => !t.completed)
+            if (outputTools.includes(event.name) && succeeded && nextIncomplete && !awaitingTodoSelfReport) {
+              const idx = currentTodos.indexOf(nextIncomplete) + 1 // todoWrite is 1-based
+              // Drop any stale nudge before adding a fresh one so they don't pile up.
+              for (let i = this.messages.length - 1; i >= 0; i--) {
+                const m = this.messages[i]
+                if (m.role === 'system' && typeof m.content === 'string' && m.content.startsWith(TODO_NUDGE_MARKER)) {
+                  this.messages.splice(i, 1)
+                }
+              }
+              this.messages.push({
+                role: 'system',
+                content: `${TODO_NUDGE_MARKER}If that finished step ${idx} ("${nextIncomplete.text}"), call todoWrite complete ${idx} before continuing.`,
+              })
+              awaitingTodoSelfReport = true
+            }
+
             yield {
               type: 'todo-update',
               tasks: currentTodos.map((t) => ({ text: t.text, completed: t.completed })),

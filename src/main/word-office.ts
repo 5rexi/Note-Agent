@@ -1,5 +1,5 @@
 // ipcMain is lazy-loaded in registerWordHandlers() to support CLI environments
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, unlinkSync, copyFileSync } from 'fs'
 import { join, dirname, basename, relative } from 'path'
 import { tmpdir, homedir } from 'os'
@@ -249,44 +249,6 @@ export async function convertDocToDocxWithPandoc(filePath: string): Promise<{ ou
     proc.on('close', (code) => {
       if (code === 0 && existsSync(tempOutput)) {
         resolve({ outputPath: tempOutput })
-      } else {
-        resolve({ error: `pandoc 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
-      }
-    })
-    proc.on('error', (err) => {
-      resolve({ error: `pandoc 启动失败: ${err.message}` })
-    })
-  })
-}
-
-export async function convertPptxToPdfWithPandoc(filePath: string): Promise<{ pdfPath?: string; error?: string }> {
-  const pandoc = findPandoc()
-  if (!pandoc) {
-    return { error: '未找到 pandoc。请安装 pandoc 以支持 PPTX 转 PDF。' }
-  }
-  const outputDir = tmpdir()
-  const baseName = basename(filePath).replace(/\.pptx$/i, '')
-  const tempOutput = join(outputDir, `${baseName}.pdf`)
-  if (existsSync(tempOutput)) {
-    try { unlinkSync(tempOutput) } catch {}
-  }
-  return new Promise((resolve) => {
-    const proc = spawn(pandoc, [filePath, '-o', tempOutput], {
-      env: process.env,
-      timeout: 60000,
-    })
-    let stderr = ''
-    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
-    proc.on('close', (code) => {
-      if (code === 0 && existsSync(tempOutput)) {
-        try {
-          const pdfBuffer = readFileSync(tempOutput)
-          const cachedPath = savePdfCache(filePath, pdfBuffer)
-          unlinkSync(tempOutput)
-          resolve({ pdfPath: cachedPath })
-        } catch (err: any) {
-          resolve({ error: `缓存保存失败: ${err.message}` })
-        }
       } else {
         resolve({ error: `pandoc 转换失败 (exit ${code}): ${stderr || '未知错误'}` })
       }

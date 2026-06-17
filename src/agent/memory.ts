@@ -1,26 +1,30 @@
 /**
  * 记忆管理系统 — 3 层记忆架构
  *
- * | 层级 | 文件位置 | 内容 |
- * |------|----------|------|
- * | 工作区记忆 | <workspace>/.note_agent/NOTEAGENT.md | 项目背景、技术栈、约定 |
- * | 用户记忆 | ~/.note_agent/user-profile.md | 用户偏好、常用命令 |
- * | 会话记忆 | 数据库存储 | 本轮摘要、关键决策 |
+ * | 层级 | 存储位置 | 内容 | 写入 |
+ * |------|----------|------|------|
+ * | 工作区记忆 | <workspace>/.note_agent/NOTEAGENT.md | 项目背景、技术栈、约定 | 人工编辑（只读注入） |
+ * | 全局记忆 | 数据库 kv_memories (scope='global') | 跨项目的用户偏好 | 模型写入需确认 |
+ * | 会话记忆 | 数据库 memories (按 session) | 本轮摘要、关键决策 | 自动 |
  */
 
 import { existsSync, readFileSync } from 'fs'
 import { join, resolve } from 'path'
-import { homedir } from 'os'
-import { loadMemories, saveMemory, deleteMemory } from './persistence'
+import {
+  loadMemories,
+  saveMemory,
+  deleteMemory,
+  getKvMemories,
+} from './persistence'
 
 const WORKSPACE_MEMORY_FILE = '.note_agent/NOTEAGENT.md'
-const USER_PROFILE_FILE = 'user-profile.md'
+const GLOBAL_SCOPE = 'global'
 const SESSION_MEMORY_TYPE = 'session'
 const MAX_SESSION_MEMORY_ITEMS = 20
 const MAX_MEMORY_CHARS_PER_ITEM = 2000
 
 /**
- * 读取工作区记忆 (NOTEAGENT.md)
+ * 读取工作区记忆 (NOTEAGENT.md) — 人工维护，只读注入
  */
 export function loadWorkspaceMemory(workspacePath: string): string | undefined {
   const filePath = join(resolve(workspacePath), WORKSPACE_MEMORY_FILE)
@@ -34,17 +38,12 @@ export function loadWorkspaceMemory(workspacePath: string): string | undefined {
 }
 
 /**
- * 读取用户记忆 (user-profile.md)
+ * 读取全局记忆（跨项目用户偏好）— 渲染为 `- <key>: <value>` 列表
  */
-export function loadUserProfile(): string | undefined {
-  const filePath = join(homedir(), '.note_agent', USER_PROFILE_FILE)
-  if (!existsSync(filePath)) return undefined
-  try {
-    const content = readFileSync(filePath, 'utf-8').trim()
-    return content.length > 0 ? content : undefined
-  } catch {
-    return undefined
-  }
+export function loadGlobalMemory(): string | undefined {
+  const entries = getKvMemories(GLOBAL_SCOPE)
+  if (entries.length === 0) return undefined
+  return entries.map((e) => `- ${e.key}: ${e.value}`).join('\n')
 }
 
 /**
@@ -90,8 +89,8 @@ export function clearSessionMemory(sessionId: string): void {
 export interface MemoryContext {
   /** 工作区记忆 (NOTEAGENT.md) */
   workspaceMemory?: string
-  /** 用户记忆 (user-profile.md) */
-  userProfile?: string
+  /** 全局记忆（跨项目用户偏好） */
+  globalMemory?: string
   /** 会话记忆 */
   sessionMemory?: string
 }
@@ -102,7 +101,7 @@ export interface MemoryContext {
 export function buildMemoryContext(workspacePath: string, sessionId?: string): MemoryContext {
   const ctx: MemoryContext = {
     workspaceMemory: loadWorkspaceMemory(workspacePath),
-    userProfile: loadUserProfile(),
+    globalMemory: loadGlobalMemory(),
   }
 
   if (sessionId) {
@@ -122,8 +121,8 @@ export function formatMemoryContext(ctx: MemoryContext): string {
     parts.push(`## Project Context (NOTEAGENT.md)\n${ctx.workspaceMemory}`)
   }
 
-  if (ctx.userProfile) {
-    parts.push(`## User Profile\n${ctx.userProfile}`)
+  if (ctx.globalMemory) {
+    parts.push(`## Global Memory (user preferences across projects)\n${ctx.globalMemory}`)
   }
 
   if (ctx.sessionMemory) {

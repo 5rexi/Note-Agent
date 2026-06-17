@@ -8,7 +8,7 @@ import { recordFileEdit } from './history'
 
 const inputSchema = z.object({
   path: z.string().describe('Relative path to the file'),
-  search: z.string().describe('Exact text to search for'),
+  search: z.string().describe('Text to find. Copy it VERBATIM from readFile output (including indentation); it must be unique in the file. Line endings are matched leniently (CRLF/LF agnostic).'),
   replace: z.string().describe('Replacement text'),
 })
 
@@ -16,7 +16,7 @@ type Input = z.infer<typeof inputSchema>
 
 export const EditFileTool: Tool<Input, { path: string; replacements: number }> = {
   name: 'editFile',
-  description: 'Edit a file by replacing an exact string with another string.',
+  description: 'Edit a file by replacing the `search` string with the `replace` string. Matching is line-ending agnostic (works on CRLF Windows files). Prefer this over editFileRange — copy a unique `search` snippet verbatim from readFile instead of computing line/column numbers.',
   inputSchema,
 
   isReadOnly() { return false },
@@ -53,15 +53,27 @@ export const EditFileTool: Tool<Input, { path: string; replacements: number }> =
       return { data: { path: input.path, replacements: 0 }, error: err.message }
     }
 
-    const content = readFileSync(filePath, 'utf-8')
+    const raw = readFileSync(filePath, 'utf-8')
     if (input.search === '') {
       return { data: { path: input.path, replacements: 0 }, error: `Search text cannot be empty` }
     }
-    if (!content.includes(input.search)) {
-      return { data: { path: input.path, replacements: 0 }, error: `Search text not found in ${input.path}` }
+    // Line-ending agnostic matching: normalize file + search/replace to LF for
+    // the match, then write back in the file's original EOL style. This is the
+    // fix for "search text not found" on CRLF (Windows) .tex/.md files.
+    const hasCRLF = raw.includes('\r\n')
+    const norm = (s: string) => s.replace(/\r\n/g, '\n')
+    const content = norm(raw)
+    const search = norm(input.search)
+    const replace = norm(input.replace)
+    if (!content.includes(search)) {
+      return {
+        data: { path: input.path, replacements: 0 },
+        error: `Search text not found in ${input.path}. Matching ignores CRLF/LF differences, so copy the snippet VERBATIM from readFile output (exact characters + indentation) and make sure it is unique.`,
+      }
     }
-    const newContent = content.split(input.search).join(input.replace)
-    const replacements = content.split(input.search).length - 1
+    const replacedNorm = content.split(search).join(replace)
+    const replacements = content.split(search).length - 1
+    const newContent = hasCRLF ? replacedNorm.replace(/\n/g, '\r\n') : replacedNorm
     writeFileSync(filePath, newContent, 'utf-8')
 
     // Notify renderer that file changed (so editor refreshes)

@@ -30,8 +30,9 @@ describe('ExecuteCommandTool', () => {
     expect(() => ExecuteCommandTool.validateInput({})).toThrow()
   })
 
-  it('should be destructive', () => {
-    expect(ExecuteCommandTool.isDestructive()).toBe(false)
+  it('should be destructive and not read-only', () => {
+    // Running arbitrary commands is destructive by definition.
+    expect(ExecuteCommandTool.isDestructive()).toBe(true)
     expect(ExecuteCommandTool.isReadOnly()).toBe(false)
   })
 })

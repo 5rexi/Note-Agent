@@ -17,6 +17,7 @@ import { type CompactConfig, estimateMessageTokens, microcompact } from '../comp
 import { runTools } from './tool-executor'
 import { maybeCompactMessages } from './context-compactor'
 import { zodToJsonSchema } from './schema-conversion'
+import { CACHE_BREAKPOINT } from '../prompt/minimal'
 import { logger } from '../logger'
 
 export interface RoundExecutorOptions {
@@ -69,8 +70,17 @@ export async function* executeRound(
   let endedByDone = false
   let endedByAskQuestion = false
   let consecutiveEmptyRounds = 0
+  // Set after an empty (text-only) round so the next round forces a tool call.
+  // Far more reliable than nagging in the prompt, and works across providers.
+  let forceToolChoiceNextRound = false
 
   for (let round = 0; round < maxRounds; round++) {
+    // Stop promptly if the user cancelled (don't start another round).
+    if (opts.signal?.aborted) {
+      logger.info('[RoundExecutor] Aborted — stopping round loop.')
+      return
+    }
+
     // Auto-compact before each round if context is too long
     const compactEvent = await maybeCompactMessages(messages, resolveConfig(0), {
       autoCompact,
@@ -108,8 +118,21 @@ export async function* executeRound(
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
       .join('\n\n')
-    const mergedSystemPrompt = baseSystemPrompt + contextWarning +
-      (trailingSystem ? '\n\n' + trailingSystem : '')
+
+    // Keep the cache breakpoint between the stable prefix and the volatile
+    // suffix. Everything appended per-round (context warning, trailing
+    // reminders) MUST land after the breakpoint so the cached prefix stays
+    // byte-identical across rounds. If the builder didn't emit a breakpoint
+    // (e.g. no plan/todo), insert one so the prefix is still cacheable.
+    const [stablePrefix, ...volatileRest] = baseSystemPrompt.split(CACHE_BREAKPOINT)
+    const volatileSuffix = [
+      volatileRest.join(CACHE_BREAKPOINT),
+      contextWarning.trim(),
+      trailingSystem,
+    ].filter(Boolean).join('\n\n')
+    const mergedSystemPrompt = volatileSuffix
+      ? stablePrefix + CACHE_BREAKPOINT + volatileSuffix
+      : stablePrefix
 
     // Filter out system messages from the messages array to avoid duplicates
     const nonSystemMessages = messages.filter((m) => m.role !== 'system')
@@ -146,8 +169,10 @@ export async function* executeRound(
       yield { type: 'error', message: 'LLM client not available' }
       return
     }
-    logger.info(`[RoundExecutor] Round ${round}: calling LLM with ${apiMessages.length} messages, ${toolSchemas.length} tools`)
-    const stream = client.stream(apiMessages, toolSchemas, opts.signal)
+    const toolChoice = forceToolChoiceNextRound ? 'required' : 'auto'
+    forceToolChoiceNextRound = false
+    logger.info(`[RoundExecutor] Round ${round}: calling LLM with ${apiMessages.length} messages, ${toolSchemas.length} tools, tool_choice=${toolChoice}`)
+    const stream = client.stream(apiMessages, toolSchemas, opts.signal, { toolChoice })
     let roundText = ''
     let roundReasoning = ''
     const roundToolCalls: ToolCall[] = []
@@ -224,9 +249,12 @@ export async function* executeRound(
       const priorNonSystem = [...messages].slice(0, -1).reverse().find((m) => m.role !== 'system')
       const isReplyingToTools = priorNonSystem?.role === 'tool'
       if (isReplyingToTools && consecutiveEmptyRounds === 1) {
-        logger.info(`[RoundExecutor] Round ${round}: Grace round after tool results — keeping message and continuing.`)
-        // Gentle reminder: if the task is done, call done instead of continuing
-        messages.push({ role: 'system', content: 'Reminder: If you have completed the user\'s request, call `done` now. Do NOT repeat actions that have already succeeded.' })
+        logger.info(`[RoundExecutor] Round ${round}: Grace round after tool results — keeping message, forcing a tool next round.`)
+        // Force a tool call next round. Since `done` is itself a tool, the model
+        // can satisfy this by finishing (call `done`) OR by making progress —
+        // both are valid outcomes, and neither is a text-only stall.
+        messages.push({ role: 'system', content: 'Reminder: If you have completed the user\'s request, call `done`. Otherwise call the next tool. Do NOT repeat actions that already succeeded.' })
+        forceToolChoiceNextRound = true
         continue
       }
 
@@ -255,12 +283,14 @@ export async function* executeRound(
         break
       }
 
-      // Inject escalation reminder into messages (will be merged into system prompt next round)
-      const reminder = consecutiveEmptyRounds === 1
-        ? 'CRITICAL: You have NOT called any tool. Stop writing text and CALL A TOOL IMMEDIATELY. No text responses are allowed — only tool calls.'
-        : 'FINAL WARNING: You have not called any tool for 2 rounds. Call a tool NOW or the task will FAIL.'
-      logger.info(`[RoundExecutor] Round ${round}: Injecting reminder (${consecutiveEmptyRounds} empty rounds)`)
-      messages.push({ role: 'system', content: reminder })
+      // Force a tool call next round and add a short reminder to steer which one.
+      // Forcing is the actual lever; the reminder only helps the model pick well.
+      logger.info(`[RoundExecutor] Round ${round}: Empty round — forcing tool choice next round (${consecutiveEmptyRounds} empty).`)
+      messages.push({
+        role: 'system',
+        content: 'You must call a tool now. If the task is finished, call `done`; otherwise call the tool that makes progress.',
+      })
+      forceToolChoiceNextRound = true
 
       continue
     } else {
@@ -278,6 +308,13 @@ export async function* executeRound(
       (event) => { subagentEvents.push(event) },
       roundConfig,
     )
+
+    // If the user cancelled while a tool was running, stop now without
+    // feeding results back into another LLM round.
+    if (opts.signal?.aborted) {
+      logger.info('[RoundExecutor] Aborted during tool execution — stopping.')
+      return
+    }
 
     // Yield any subagent events that were collected during execution
     for (const evt of subagentEvents) {

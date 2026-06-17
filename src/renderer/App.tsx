@@ -13,13 +13,12 @@ import {
   langAtom,
 } from './atoms'
 import { Toaster, toast } from 'sonner'
-import { Panel, Group, Separator, type PanelImperativeHandle, type PanelSize } from 'react-resizable-panels'
+import { Panel, Group, Separator, type PanelImperativeHandle, type PanelSize, type Layout, type GroupImperativeHandle } from 'react-resizable-panels'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import MarkdownEditor from './components/Editor'
 import ChatPanel from './components/ChatPanel'
 import SettingsModal from './components/SettingsModal'
-import FloatingPanel from './components/FloatingPanel'
 import ShellEnvSetupModal from './components/ShellEnvSetupModal'
 
 export default function App() {
@@ -41,6 +40,11 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(252)
   const sidebarRef = useRef<PanelImperativeHandle>(null)
   const chatRef = useRef<PanelImperativeHandle>(null)
+  // Persisted panel layout (widths + collapsed states). Applied imperatively
+  // after load via groupRef.setLayout — so the UI renders immediately with
+  // defaults and never blanks waiting on the settings read.
+  const groupRef = useRef<GroupImperativeHandle>(null)
+  const layoutSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarWrapperRef = useRef<HTMLDivElement>(null)
   const prevWorkspaceIdRef = useRef<string | null>(null)
 
@@ -329,6 +333,29 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [editorState, currentTaskId, currentWorkspaceId])
 
+  // Restore the persisted panel layout once on mount (applied imperatively).
+  useEffect(() => {
+    let alive = true
+    window.electronAPI.getSetting('panelLayout').then((raw: any) => {
+      if (!alive || !raw) return
+      let layout: Layout | null = null
+      try { layout = JSON.parse(raw) } catch { /* ignore */ }
+      if (!layout) return
+      // Seed collapsed states so the collapse bars render correctly on load.
+      if (typeof layout.sidebar === 'number') setSidebarCollapsed(layout.sidebar < 0.5)
+      if (typeof layout.chat === 'number') setChatCollapsed(layout.chat < 0.5)
+      try { groupRef.current?.setLayout(layout) } catch { /* ignore */ }
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const persistLayout = (layout: Layout) => {
+    if (layoutSaveTimer.current) clearTimeout(layoutSaveTimer.current)
+    layoutSaveTimer.current = setTimeout(() => {
+      window.electronAPI.setSetting('panelLayout', JSON.stringify(layout)).catch(() => {})
+    }, 300)
+  }
+
   const handleSidebarResize = (size: PanelSize) => {
     setSidebarCollapsed(size.asPercentage < 0.5)
     setSidebarWidth(Math.round(size.inPixels))
@@ -404,8 +431,6 @@ export default function App() {
         }}
       />
 
-      <FloatingPanel />
-
       {/* Sidebar Collapse Bar */}
       {sidebarCollapsed && (
         <button
@@ -423,9 +448,15 @@ export default function App() {
         </button>
       )}
 
-      <Group orientation="horizontal" className="flex-1">
+      <Group
+        groupRef={groupRef}
+        orientation="horizontal"
+        className="flex-1"
+        onLayoutChanged={persistLayout}
+      >
         {/* Sidebar */}
         <Panel
+          id="sidebar"
           panelRef={sidebarRef}
           defaultSize="18%"
           minSize="12%"
@@ -448,7 +479,7 @@ export default function App() {
         />
 
         {/* Editor */}
-        <Panel defaultSize="55%" minSize="30%" className="!overflow-visible">
+        <Panel id="editor" defaultSize="55%" minSize="30%" className="!overflow-visible">
           <MarkdownEditor />
         </Panel>
 
@@ -459,6 +490,7 @@ export default function App() {
 
         {/* Chat */}
         <Panel
+          id="chat"
           panelRef={chatRef}
           defaultSize="27%"
           minSize="18%"

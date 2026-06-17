@@ -7,7 +7,7 @@ interface ShellEnvSetupModalProps {
 
 export default function ShellEnvSetupModal({ onComplete }: ShellEnvSetupModalProps) {
   const [detected, setDetected] = useState<{ gitbash?: string; wsl: boolean }>({ wsl: false })
-  const [selected, setSelected] = useState<'gitbash' | 'wsl' | 'native' | null>(null)
+  const [selected, setSelected] = useState<'gitbash' | 'wsl' | 'cmd' | 'powershell' | null>(null)
   const [gitBashPath, setGitBashPath] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -23,7 +23,7 @@ export default function ShellEnvSetupModal({ onComplete }: ShellEnvSetupModalPro
         } else if (d.wsl) {
           setSelected('wsl')
         } else {
-          setSelected('native')
+          setSelected('cmd')
         }
       } catch {}
       setLoading(false)
@@ -139,20 +139,38 @@ export default function ShellEnvSetupModal({ onComplete }: ShellEnvSetupModalPro
             </div>
           </button>
 
-          {/* Native */}
+          {/* PowerShell */}
           <button
-            onClick={() => setSelected('native')}
+            onClick={() => setSelected('powershell')}
             className="w-full flex items-start gap-3 p-3 rounded-lg text-left transition-all"
             style={{
-              border: selected === 'native' ? '2px solid var(--na-accent)' : '1px solid var(--na-border-subtle)',
-              background: selected === 'native' ? 'var(--na-bg-active)' : 'transparent',
+              border: selected === 'powershell' ? '2px solid var(--na-accent)' : '1px solid var(--na-border-subtle)',
+              background: selected === 'powershell' ? 'var(--na-bg-active)' : 'transparent',
+            }}
+          >
+            <Terminal className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--na-text-tertiary)' }} />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--na-text-primary)' }}>PowerShell</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--na-text-tertiary)' }}>
+                无需额外安装。适合 PowerShell cmdlet；部分 bash 命令（mkdir -p、sed 等）无法执行。
+              </div>
+            </div>
+          </button>
+
+          {/* CMD */}
+          <button
+            onClick={() => setSelected('cmd')}
+            className="w-full flex items-start gap-3 p-3 rounded-lg text-left transition-all"
+            style={{
+              border: selected === 'cmd' ? '2px solid var(--na-accent)' : '1px solid var(--na-border-subtle)',
+              background: selected === 'cmd' ? 'var(--na-bg-active)' : 'transparent',
             }}
           >
             <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--na-text-tertiary)' }} />
             <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-medium" style={{ color: 'var(--na-text-primary)' }}>原生 cmd / PowerShell</div>
+              <div className="text-[13px] font-medium" style={{ color: 'var(--na-text-primary)' }}>原生 cmd</div>
               <div className="text-[11px] mt-0.5" style={{ color: 'var(--na-text-tertiary)' }}>
-                无需额外安装。但部分 bash 命令（mkdir -p、unzip、sed 等）可能无法执行，AI 兼容性受限。
+                无需额外安装。但部分 bash 命令（mkdir -p、unzip、sed 等）无法执行，AI 兼容性受限。
               </div>
             </div>
           </button>

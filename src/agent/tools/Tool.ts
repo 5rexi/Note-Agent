@@ -23,6 +23,10 @@ export interface ToolContext {
     apis?: string[]
     mcpServers?: string[]
   }
+  /** Abort signal for the running turn. Long tools (exec, fetch, subagent) MUST honor it. */
+  signal?: AbortSignal
+  /** Subagent nesting depth (0 = top-level agent). Used to bound recursion. */
+  depth?: number
 }
 
 export interface Tool<Input = unknown, Output = unknown> {
